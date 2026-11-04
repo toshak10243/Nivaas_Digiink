@@ -1,0 +1,30 @@
+# VPS par:  cp server/.env.example .env  → values bharein →  docker compose up -d --build
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nivaas
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-nivaas}
+      POSTGRES_DB: nivaas
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nivaas"]
+      interval: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://nivaas:${DB_PASSWORD:-nivaas}@db:5432/nivaas
+      UPLOAD_DIR: /data/uploads
+    volumes: [uploads:/data/uploads]
+    ports: ["127.0.0.1:4100:4100"]     # only nginx on the same VPS can reach it
+    depends_on:
+      db: { condition: service_healthy }
+
+volumes:
+  pgdata:
+  uploads:
