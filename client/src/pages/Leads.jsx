@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { api } from '../api/index.js';
 import { Icon, Avatar, Pill, Drawer, Modal, Seg, Field, useLoad, Loading, Empty } from '../components/ui.jsx';
 import { STAGES, stageLabel, SOURCES, ago, dateTime, phone, money } from '../lib/format.js';
@@ -15,6 +15,15 @@ export default function Leads({ me, say, go, params }) {
   const [team] = useLoad(() => (role === 'admin' ? api.get('/api/team') : Promise.resolve([])), [role]);
   const [projects] = useLoad(() => api.get('/api/projects'), []);
   const [adding, setAdding] = useState(false);
+  const [selected, setSelected] = useState([]);
+  const [bulk, setBulk] = useState('');
+  const [bulkValue, setBulkValue] = useState('');
+  const [working, setWorking] = useState(false);
+  const [message, setMessage] = useState('');
+  const [messageResult, setMessageResult] = useState(null);
+  const [prefs, setPrefs] = useState([]);
+  useEffect(() => { setSelected([]); setMessageResult(null); }, [q, temp, followFilter, who, view, prefs]);
+  useEffect(() => { if (leads) setSelected(ids => ids.filter(id => leads.some(l => l.id === id))); }, [leads]);
   const openId = params[0];
   if (!leads) return <div className="page"><Loading /></div>;
 
@@ -23,6 +32,7 @@ export default function Leads({ me, say, go, params }) {
   const isFuture = d => d && new Date(d) > new Date() && !isToday(d);
 
   const shown = leads.filter(l => {
+    if (prefs.length && !prefs.every(p => (l.preferences || []).includes(p) || (['1 BHK','2 BHK','3 BHK','4 BHK'].includes(p) && (l.config_pref || '').includes(p)))) return false;
     if (temp !== 'all' && l.temperature !== temp) return false;
     if (who !== 'all' && (who === 'none' ? !!l.assigned_to : l.assigned_to !== who)) return false;
     if (followFilter === 'today' && !isToday(l.followup_at)) return false;
@@ -32,6 +42,29 @@ export default function Leads({ me, say, go, params }) {
     return true;
   });
   const sellers = (team || []).filter(u => ['sales', 'broker'].includes(u.role));
+  const toggle = id => setSelected(ids => ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id]);
+  const applyBulk = async () => {
+    if (!bulk || !selected.length || working) return;
+    if (bulk === 'email') {
+      const recipients = leads.filter(l => selected.includes(l.id)).map(l => l.email).filter(email => typeof email === 'string' && /^[^\s@<>;,]+@[^\s@<>;,]+\.[^\s@<>;,]+$/.test(email));
+      if (!recipients.length) { say('Selected leads do not have valid email addresses.'); return; }
+      window.location.href = `mailto:?bcc=${encodeURIComponent([...new Set(recipients)].join(','))}&body=${encodeURIComponent(message)}`;
+      say(`Email draft opened for ${recipients.length} of ${selected.length} leads. Review and send in your email app.`); return;
+    }
+    if (bulk === 'message' && !window.confirm(`Send this WhatsApp message to ${selected.length} selected leads?`)) return;
+    if (bulk === 'delete' && !window.confirm(`Permanently delete ${selected.length} selected leads and their chats, visits and activity? This cannot be undone.`)) return;
+    setWorking(true);
+    try {
+      if (bulk === 'message') {
+        const result = await api.post('/api/leads/bulk-message', { ids: selected, text: message });
+        setMessageResult(result); setSelected(result.failed.map(x => x.id));
+        say(`${result.sent.length} sent; ${result.failed.length} not sent`); await reload(); return;
+      }
+      await api.post('/api/leads/bulk', { ids: selected, action: bulk, value: bulkValue });
+      say(`${selected.length} leads updated`); setSelected([]); setBulk(''); setBulkValue(''); await reload();
+    } catch (e) { say(e.message); }
+    finally { setWorking(false); }
+  };
 
   return (
     <div className="page wide">
@@ -50,6 +83,23 @@ export default function Leads({ me, say, go, params }) {
         <label className="search" style={{ flex: '1 1 200px', maxWidth: 260 }}><Icon name="search" /><span className="sr">Search</span><input placeholder="Name, phone or unit" value={q} onChange={e => setQ(e.target.value)} /></label>
       </div>
 
+      <details className="crm-checklist"><summary>Filter by customer preferences</summary><div className="crm-check-options">{['1 BHK','2 BHK','3 BHK','4 BHK','Parking','Home loan','Ready to move'].map(option => <label className="crm-check" key={option}><input type="checkbox" checked={prefs.includes(option)} onChange={e => setPrefs(p => e.target.checked ? [...p,option] : p.filter(x => x !== option))} />{option}</label>)}{prefs.length > 0 && <button className="linkbtn" onClick={() => setPrefs([])}>Clear preferences</button>}</div></details>
+      {messageResult && <div className="note" role="status">WhatsApp: {messageResult.sent.length} sent, {messageResult.failed.length} not sent.{messageResult.failed.length > 0 && <ul>{messageResult.failed.map(f => <li key={f.id}>{leads.find(l => l.id === f.id)?.name || 'Lead'}: {f.reason}</li>)}</ul>}</div>}
+      {view === 'list' && selected.length > 0 && <div className="bulkbar" role="region" aria-label="Bulk lead actions" aria-busy={working}>
+        <b aria-live="polite">{selected.length} selected</b>
+        <select className="select" aria-label="Bulk action" value={bulk} disabled={working} onChange={e => { setBulk(e.target.value); setBulkValue(''); }}>
+          <option value="">Choose action</option><option value="stage">Change stage</option><option value="complete">Complete follow-ups</option>
+          {role !== 'broker' && <option value="message">Send WhatsApp message</option>}
+          <option value="email">Compose email</option>
+          {role === 'admin' && <><option value="assign">Transfer to agent</option><option value="delete">Delete leads</option></>}
+        </select>
+        {bulk === 'stage' && <select className="select" aria-label="New stage" value={bulkValue} disabled={working} onChange={e => setBulkValue(e.target.value)}><option value="">Select stage</option>{STAGES.map(([k,v]) => <option key={k} value={k}>{v}</option>)}</select>}
+        {bulk === 'assign' && <select className="select" aria-label="Transfer selected leads to" value={bulkValue} disabled={working} onChange={e => setBulkValue(e.target.value)}><option value="">Select agent</option>{sellers.filter(u => u.active !== false).map(u => <option key={u.id} value={u.id}>{u.name}</option>)}</select>}
+        {bulk === 'message' && <div style={{ flexBasis:'100%' }}><textarea className="input" aria-label="Bulk WhatsApp message" placeholder="Message for selected customers" maxLength={4000} value={message} disabled={working} onChange={e => setMessage(e.target.value)} /><p className="muted">Up to 50 leads. Only connected conversations with a customer reply in the last 24 hours can receive this message.</p></div>}
+        {bulk === 'email' && <div style={{ flexBasis:'100%' }}><textarea className="input" aria-label="Bulk email body" placeholder="Email body" maxLength={4000} value={message} onChange={e => setMessage(e.target.value)} /><p className="muted">Opens your email app with BCC recipients. Leads without an email address are skipped.</p></div>}
+        <button className="btn sun" disabled={working || !bulk || (['stage','assign'].includes(bulk) && !bulkValue) || (bulk === 'message' && (!message.trim() || selected.length > 50))} onClick={applyBulk}>{working ? 'Updating...' : bulk === 'message' ? 'Send message' : 'Apply'}</button>
+        <button className="btn" disabled={working} onClick={() => setSelected([])}>Clear selection</button>
+      </div>}
       {shown.length === 0 ? <Empty icon="funnel" title="No leads here yet" /> : view === 'board' ? (
         <div className="board">
           {STAGES.map(([k, l]) => {
@@ -64,9 +114,10 @@ export default function Leads({ me, say, go, params }) {
         </div>
       ) : (
         <div className="card tablewrap"><table>
-          <thead><tr><th>Name</th><th>Phone</th><th>Stage</th><th>Interest</th><th>Budget</th><th>Source</th>{role === 'admin' && <th>Owner</th>}<th>Next visit</th><th>Updated</th></tr></thead>
+          <thead><tr><th className="checkcell"><input ref={el => { if (el) el.indeterminate = selected.length > 0 && !shown.every(l => selected.includes(l.id)); }} type="checkbox" aria-label="Select all visible leads" checked={shown.length > 0 && shown.every(l => selected.includes(l.id))} disabled={working} onChange={e => setSelected(e.target.checked ? shown.map(l => l.id) : [])} /></th><th>Name</th><th>Phone</th><th>Stage</th><th>Interest</th><th>Budget</th><th>Source</th>{role === 'admin' && <th>Owner</th>}<th>Next visit</th><th>Updated</th></tr></thead>
           <tbody>{shown.map(l => (
-            <tr key={l.id} onClick={() => go('leads/' + l.id)}>
+            <tr key={l.id} className={selected.includes(l.id) ? 'lead-selected' : ''} onClick={() => go('leads/' + l.id)}>
+              <td className="checkcell" onClick={e => e.stopPropagation()}><input type="checkbox" aria-label={`Select ${l.name || l.phone}`} checked={selected.includes(l.id)} disabled={working} onChange={() => toggle(l.id)} /></td>
               <td><div className="who"><span className={'tdot ' + l.temperature} /><b>{l.name || '—'}</b></div></td><td className="mono" style={{ fontSize: 13 }}>{phone(l.phone)}</td>
               <td>{stageLabel(l.stage)}</td><td>{[l.config_pref, l.unit_no, l.project_name].filter(Boolean).join(' · ')}</td><td>{l.budget || '—'}</td><td>{SOURCES[l.source] || l.source}{l.broker_name ? ` · ${l.broker_name}` : ''}</td>
               {role === 'admin' && <td>{l.assigned_name || <span className="pill hot">Unassigned</span>}</td>}<td>{l.next_visit ? dateTime(l.next_visit) : '—'}</td><td className="time">{ago(l.updated_at)}</td>
@@ -116,8 +167,16 @@ function LeadDrawer({ id, me, say, go, sellers, projects, onClose, onChange }) {
   const [fDate, setFDate] = useState('');
   const [fType, setFType] = useState('call');
   const [fNote, setFNote] = useState('');
+  const [savingChecks, setSavingChecks] = useState(false);
   if (!l) return <Drawer title="Loading…" onClose={onClose}><Loading /></Drawer>;
   const refresh = () => { reload(); onChange(); };
+  const saveChecks = async body => {
+    if (savingChecks) return;
+    setSavingChecks(true);
+    try { await api.patch('/api/leads/' + l.id, body); await reload(); onChange(); }
+    catch (e) { say(e.message); }
+    finally { setSavingChecks(false); }
+  };
   const patch = async b => { try { await api.patch('/api/leads/' + l.id, b); refresh(); } catch (e) { say(e.message); } };
   const assign = async user_id => { try { const r = await api.post(`/api/leads/${l.id}/assign`, { user_id: user_id || null }); say(`Assigned to ${r.name}`); refresh(); } catch (e) { say(e.message); } };
   const addEvent = async kind => { if (!note.trim()) return; await api.post(`/api/leads/${l.id}/events`, { kind, body: note }); setNote(''); refresh(); };
@@ -133,16 +192,6 @@ function LeadDrawer({ id, me, say, go, sellers, projects, onClose, onChange }) {
       say('Follow-up reminder set');
       setFDate('');
       setFNote('');
-    } catch (e) {
-      say(e.message);
-    }
-  };
-
-  const clearFollowup = async () => {
-    try {
-      await patch({ followup_at: null, followup_type: null, followup_note: null });
-      await api.post(`/api/leads/${l.id}/events`, { kind: 'note', body: 'Follow-up marked completed' });
-      say('Follow-up marked completed');
     } catch (e) {
       say(e.message);
     }
@@ -229,7 +278,7 @@ function LeadDrawer({ id, me, say, go, sellers, projects, onClose, onChange }) {
             <div className="followup-actions">
               <a className="btn sm sun" href={`tel:+${String(l.phone).replace(/\D/g, '')}`}><Icon name="phone" />Call Now</a>
               <a className="btn sm wa-btn" href={`https://wa.me/${String(l.phone).replace(/\D/g, '')}?text=${encodeURIComponent(`Namaste ${l.name?.split(' ')[0] || ''}! Following up as discussed regarding our property.`)}`} target="_blank" rel="noreferrer"><Icon name="wa" />WhatsApp</a>
-              <button className="btn sm" onClick={clearFollowup}><Icon name="checkCircle" />Mark Done</button>
+              <label className="crm-check"><input type="checkbox" checked={false} disabled={savingChecks} onChange={() => saveChecks({ followup_at: null, followup_type: null, followup_note: null })} />Mark follow-up completed</label>
             </div>
           </div>
         ) : (
@@ -261,6 +310,15 @@ function LeadDrawer({ id, me, say, go, sellers, projects, onClose, onChange }) {
         </div>
       </div>
 
+      <fieldset className="crm-checklist" disabled={savingChecks}>
+        <legend>Customer preferences</legend>
+        <div className="crm-check-options">{['1 BHK','2 BHK','3 BHK','4 BHK','Parking','Home loan','Ready to move'].map(option => <label className="crm-check" key={option}><input type="checkbox" checked={(l.preferences || []).includes(option)} onChange={e => saveChecks({ preferences: e.target.checked ? [...(l.preferences || []), option] : (l.preferences || []).filter(x => x !== option) })} />{option}</label>)}</div>
+      </fieldset>
+      <fieldset className="crm-checklist" disabled={savingChecks}>
+        <legend>Tasks & document checklist</legend>
+        <p className="muted">Tick completed tasks and received documents. Unticked items are pending.</p>
+        <div className="crm-check-options">{[['call_done','Client call completed'],['visit_done','Site visit completed'],['documents_sent','Property documents sent'],['pan_received','PAN received'],['aadhaar_received','Aadhaar received'],['booking_form','Booking form received'],['agreement_signed','Agreement signed']].map(([key,label]) => <label className="crm-check" key={key}><input type="checkbox" checked={!!l.checklist?.[key]} onChange={e => saveChecks({ checklist: { ...(l.checklist || {}), [key]: e.target.checked } })} />{label}</label>)}</div>
+      </fieldset>
       {/* Feature 7: AI Buyer Objection Resolver */}
       <AiObjectionCard l={l} say={say} />
 

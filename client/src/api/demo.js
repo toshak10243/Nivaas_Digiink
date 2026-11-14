@@ -328,6 +328,36 @@ on('PATCH', '/api/units/:id', (p, b) => {
 // leads
 on('GET', '/api/leads', q => { need('admin', 'sales', 'broker'); return clone(scopeLeads().filter(l => ['stage', 'project_id', 'assigned_to', 'source', 'temperature'].every(k => !q[k] || l[k] === q[k]) && (!q.q || `${l.name} ${l.phone}`.toLowerCase().includes(q.q.toLowerCase())))
   .sort((a, b) => b.updated_at.localeCompare(a.updated_at)).map(leadRow)); });
+on('POST', '/api/leads/bulk-message', (_, b) => {
+  need('admin','sales');
+  const rows = scopeLeads().filter(l => b.ids?.includes(l.id));
+  if (!b.ids?.length || b.ids.length > 50 || rows.length !== new Set(b.ids).size) throw err(400, 'Select up to 50 accessible leads.');
+  if (!b.text?.trim()) throw err(400, 'Enter a message');
+  return { sent: [], failed: rows.map(l => ({ id: l.id, reason: 'Demo mode does not send real WhatsApp messages.' })) };
+});
+on('POST', '/api/leads/bulk', (_, b) => {
+  need('admin', 'sales', 'broker');
+  if (!Array.isArray(b.ids) || !b.ids.length || b.ids.length > 500) throw err(400, 'Select between 1 and 500 leads.');
+  if (!['stage','assign','delete','complete'].includes(b.action)) throw err(400, 'Unknown action');
+  if (['assign','delete'].includes(b.action)) need('admin');
+  const ids = [...new Set(b.ids)], rows = scopeLeads().filter(l => ids.includes(l.id));
+  if (rows.length !== ids.length) throw err(403, 'Some leads are not accessible');
+  if (b.action === 'stage' && !['new','contacted','qualified','visit_scheduled','visit_done','negotiation','booked','lost'].includes(b.value)) throw err(400, 'Unknown stage');
+  const person = U(b.value);
+  if (b.action === 'assign' && (!person?.active || !['sales','broker'].includes(person.role))) throw err(400, 'Select an active sales agent or broker');
+  if (b.action === 'delete' && (rows.some(l => l.stage === 'booked') || bookings.some(x => ids.includes(x.lead_id)))) throw err(409, 'Leads linked to bookings cannot be deleted.');
+  for (const l of rows) {
+    if (b.action === 'delete') {
+      for (const table of [events, visits, chats]) for (let i = table.length - 1; i >= 0; i--) if (table[i].lead_id === l.id) table.splice(i, 1);
+      leads.splice(leads.indexOf(l), 1); continue;
+    }
+    if (b.action === 'stage') l.stage = b.value;
+    if (b.action === 'complete') { l.followup_at = null; l.followup_type = null; l.followup_note = null; }
+    if (b.action === 'assign') { l.assigned_to = person.id; l.assigned_at = now(); l.first_touch_at = null; visits.filter(v => v.lead_id === l.id && ['scheduled','confirmed'].includes(v.status)).forEach(v => { v.agent_id = person.id; }); chats.filter(c => c.lead_id === l.id).forEach(c => { c.agent_id = person.id; c.pending_ai_at = null; }); }
+    l.updated_at = now(); log(l.id, me.id, 'note', `Bulk ${b.action}${b.value ? ': ' + b.value : ''}`);
+  }
+  return { ok: true, count: ids.length };
+});
 on('GET', '/api/leads/:id', p => {
   const l = scopeLeads().find(x => x.id === p.id); if (!l) throw err(404, 'Lead not found');
   return clone({ ...l, events: events.filter(e => e.lead_id === l.id).sort((a, b) => b.created_at.localeCompare(a.created_at)).map(e => ({ ...e, actor: U(e.actor_id)?.name || null })),
@@ -349,7 +379,7 @@ on('POST', '/api/leads', (_, b) => {
 on('PATCH', '/api/leads/:id', (p, b) => {
   const l = scopeLeads().find(x => x.id === p.id); if (!l) throw err(404, 'Lead not found');
   const old = l.stage;
-  for (const k of ['name', 'email', 'budget', 'config_pref', 'purpose', 'timeline', 'notes', 'stage', 'temperature', 'project_id', 'unit_id', 'lost_reason', 'followup_at', 'followup_type', 'followup_note']) if (b[k] !== undefined) l[k] = b[k];
+  for (const k of ['name', 'email', 'budget', 'config_pref', 'purpose', 'timeline', 'notes', 'stage', 'temperature', 'project_id', 'unit_id', 'lost_reason', 'followup_at', 'followup_type', 'followup_note', 'preferences', 'checklist']) if (b[k] !== undefined) l[k] = b[k];
   if (l.assigned_to === me.id && !l.first_touch_at) l.first_touch_at = now();
   l.updated_at = now();
   if (b.stage && b.stage !== old) log(l.id, me.id, 'stage', `Stage: ${old.replace('_', ' ')} → ${b.stage.replace('_', ' ')}${b.lost_reason ? ` (${b.lost_reason})` : ''}`);

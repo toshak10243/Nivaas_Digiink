@@ -1,0 +1,46 @@
+﻿import assert from 'node:assert/strict';
+import express from 'express';
+import sales from './src/routes/sales.js';
+import { pool, one, q } from './src/db.js';
+import { requireAuth, sign } from './src/lib/auth.js';
+import { config } from './src/config.js';
+const app = express(); app.use(express.json()); app.use('/api', requireAuth, sales);
+let server, org, otherOrg;
+try {
+  await q("ALTER TABLE leads ADD COLUMN IF NOT EXISTS preferences jsonb NOT NULL DEFAULT '[]'; ALTER TABLE leads ADD COLUMN IF NOT EXISTS checklist jsonb NOT NULL DEFAULT '{}'");
+  org = await one("INSERT INTO orgs(name) VALUES ('Checkbox integration test') RETURNING *");
+  otherOrg = await one("INSERT INTO orgs(name) VALUES ('Other test tenant') RETURNING *");
+  const user = async (role, tenant=org.id) => one("INSERT INTO users(org_id,role,name,email,password_hash) VALUES ($1,$2,$2,$2||'@test.invalid','test') RETURNING *", [tenant,role]);
+  const admin=await user('admin'), agent=await user('sales'), broker=await user('broker'), foreign=await user('admin',otherOrg.id);
+  const lead = async (tenant=org.id, owner=agent.id, stage='new') => one("INSERT INTO leads(org_id,name,assigned_to,stage,followup_at) VALUES ($1,'Test',$2,$3,now()) RETURNING *",[tenant,owner,stage]);
+  const a=await lead(), b=await lead(), c=await lead(otherOrg.id,foreign.id), booked=await lead(org.id,agent.id,'booked');
+  server=app.listen(0,'127.0.0.1'); await new Promise(resolve=>server.once('listening',resolve));
+  const url=`http://127.0.0.1:${server.address().port}`;
+  const req=async(user,path,body,method='POST')=>{const r=await fetch(url+'/api'+path,{method,headers:{Authorization:'Bearer '+sign(user),'Content-Type':'application/json'},body:JSON.stringify(body)});return {status:r.status,data:await r.json()};};
+  const bulk=(user,ids,action,value)=>req(user,'/leads/bulk',{ids,action,value});
+  assert.equal((await bulk(agent,[a.id],'delete')).status,403);
+  assert.equal((await bulk(admin,[a.id,c.id],'stage','qualified')).status,403);
+  assert.equal((await one('SELECT stage FROM leads WHERE id=$1',[a.id])).stage,'new');
+  assert.equal((await bulk(admin,[a.id,b.id],'stage','qualified')).status,200);
+  assert.equal((await bulk(admin,[a.id],'assign',foreign.id)).status,400);
+  assert.equal((await bulk(admin,[a.id],'assign',broker.id)).status,200);
+  assert.equal((await bulk(agent,[a.id],'stage','contacted')).status,403);
+  assert.equal((await bulk(admin,[a.id,b.id],'complete')).status,200);
+  assert.equal((await one('SELECT followup_at FROM leads WHERE id=$1',[b.id])).followup_at,null);
+  assert.equal((await req(admin,'/leads/'+b.id,{preferences:['2 BHK','Parking'],checklist:{pan_received:true}},'PATCH')).status,200);
+  assert.deepEqual((await one('SELECT preferences FROM leads WHERE id=$1',[b.id])).preferences,['2 BHK','Parking']);
+  assert.equal((await req(admin,'/leads/'+b.id,{checklist:{unknown:true}},'PATCH')).status,400);
+  assert.equal((await bulk(admin,[b.id,booked.id],'delete')).status,409);
+  assert.ok(await one('SELECT id FROM leads WHERE id=$1',[b.id]));
+  assert.equal((await req(broker,'/leads/bulk-message',{ids:[a.id],text:'test'})).status,403);
+  const msg=await req(admin,'/leads/bulk-message',{ids:[b.id],text:'test'});
+  assert.equal(msg.status,200); assert.equal(msg.data.sent.length,0); assert.equal(msg.data.failed.length,1);
+  assert.equal((await bulk(admin,[b.id],'delete')).status,200);
+  assert.equal(await one('SELECT id FROM leads WHERE id=$1',[b.id]),null);
+  console.log('PASS: bulk permissions, tenant isolation, atomic rollback, assignment, follow-up completion, preference persistence, checklist validation, booked-lead protection, WhatsApp eligibility, deletion');
+} finally {
+  if(server) await new Promise(resolve=>server.close(resolve));
+  if(org) await q('DELETE FROM orgs WHERE id=$1',[org.id]);
+  if(otherOrg) await q('DELETE FROM orgs WHERE id=$1',[otherOrg.id]);
+  await pool.end();
+}

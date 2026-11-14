@@ -45,6 +45,66 @@ r.get('/leads', allow('admin', 'sales', 'broker'), h(async (req, res) => {
      WHERE l.org_id = $1${s.sql}${extra} ORDER BY l.updated_at DESC LIMIT 500`, vals));
 }));
 
+r.post('/leads/bulk', allow('admin', 'sales', 'broker'), h(async (req, res) => {
+  const { ids, action, value } = req.body || {};
+  if (!Array.isArray(ids) || !ids.length || ids.length > 500 || ids.some(id => typeof id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))) throw fail(400, 'Select between 1 and 500 leads.');
+  if (!['stage', 'assign', 'delete', 'complete'].includes(action)) throw fail(400, 'Unknown bulk action.');
+  if (['assign', 'delete'].includes(action) && req.user.role !== 'admin') throw fail(403, 'Only admins can transfer or delete leads.');
+  if (action === 'stage' && !STAGES.includes(value)) throw fail(400, 'Unknown stage.');
+  const unique = [...new Set(ids)];
+  await tx(async db => {
+    const s = scope(req.user, 'l', 3);
+    const rows = await db.many(`SELECT l.* FROM leads l WHERE l.org_id=$1 AND l.id=ANY($2::uuid[])${s.sql} ORDER BY l.id FOR UPDATE`, [req.user.org, unique, ...s.vals]);
+    if (rows.length !== unique.length) throw fail(403, 'Some selected leads are no longer accessible. Refresh and try again.');
+    let assignee;
+    if (action === 'assign') {
+      if (typeof value !== 'string' || !/^[0-9a-f-]{36}$/i.test(value)) throw fail(400, 'Select an active sales agent or broker.');
+      assignee = await db.one("SELECT id,name FROM users WHERE id=$1 AND org_id=$2 AND active AND role IN ('sales','broker')", [value, req.user.org]);
+      if (!assignee) throw fail(400, 'Select an active sales agent or broker.');
+    }
+    if (action === 'delete') {
+      if (rows.some(l => l.stage === 'booked') || await db.one('SELECT id FROM bookings WHERE lead_id=ANY($1::uuid[]) LIMIT 1', [unique])) throw fail(409, 'Leads linked to bookings cannot be deleted. Deselect them first.');
+      await db.q('DELETE FROM leads WHERE org_id=$1 AND id=ANY($2::uuid[])', [req.user.org, unique]);
+      return;
+    }
+    for (const l of rows) {
+      if (action === 'complete' && !l.followup_at) continue;
+      if (action === 'stage') await db.q('UPDATE leads SET stage=$2,updated_at=now() WHERE id=$1', [l.id, value]);
+      if (action === 'complete') await db.q('UPDATE leads SET followup_at=NULL,followup_type=NULL,followup_note=NULL,updated_at=now() WHERE id=$1', [l.id]);
+      if (action === 'assign') {
+        await db.q('UPDATE leads SET assigned_to=$2,assigned_at=now(),first_touch_at=NULL,updated_at=now() WHERE id=$1', [l.id, value]);
+        await db.q('UPDATE site_visits SET agent_id=$2 WHERE lead_id=$1 AND status IN (\'scheduled\',\'confirmed\')', [l.id, value]);
+        await db.q('UPDATE chats SET agent_id=NULL,ai_enabled=false,pending_ai_at=NULL WHERE lead_id=$1', [l.id]);
+        const number = await db.one('SELECT id FROM wa_numbers WHERE org_id=$1 AND user_id=$2 ORDER BY created_at LIMIT 1', [req.user.org, value]);
+        if (number) await db.q('INSERT INTO chats(org_id,lead_id,wa_number_id,agent_id) VALUES ($1,$2,$3,$4) ON CONFLICT(lead_id,wa_number_id) DO UPDATE SET agent_id=EXCLUDED.agent_id', [req.user.org,l.id,number.id,value]);
+        await db.q("INSERT INTO notifications(org_id,user_id,kind,body,link) VALUES ($1,$2,'lead_assigned',$3,$4)", [req.user.org, value, `Lead assigned: ${l.name || l.phone}`, `/leads/${l.id}`]);
+      }
+      await db.q('INSERT INTO lead_events(lead_id,actor_id,kind,body) VALUES ($1,$2,$3,$4)', [l.id, req.user.id, action === 'assign' ? 'assigned' : action === 'complete' ? 'followup' : 'stage', action === 'assign' ? `Bulk assigned to ${assignee.name}` : action === 'complete' ? 'Follow-up marked completed' : `Stage: ${l.stage} → ${value}`]);
+    }
+  });
+  res.json({ ok: true, count: unique.length });
+}));
+
+r.post('/leads/bulk-message', allow('admin', 'sales'), h(async (req, res) => {
+  const { ids, text } = req.body || {};
+  if (!Array.isArray(ids) || !ids.length || ids.length > 50 || ids.some(id => typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id))) throw fail(400, 'Select up to 50 leads to message.');
+  if (typeof text !== 'string' || !text.trim() || text.length > 4000) throw fail(400, 'Enter a message of up to 4000 characters.');
+  const s = scope(req.user, 'l', 3), unique = [...new Set(ids)];
+  const leads = await many(`SELECT l.* FROM leads l WHERE l.org_id=$1 AND l.id=ANY($2::uuid[])${s.sql}`, [req.user.org, unique, ...s.vals]);
+  if (leads.length !== unique.length) throw fail(403, 'Some selected leads are no longer accessible.');
+  const sent = [], failed = [];
+  for (const lead of leads) {
+    const c = await one(`SELECT c.*,w.phone_number_id,w.access_token FROM chats c JOIN wa_numbers w ON w.id=c.wa_number_id WHERE c.lead_id=$1 AND c.org_id=$2 AND c.last_customer_at > now()-interval '24 hours' ${req.user.role === 'admin' ? '' : 'AND c.agent_id=$3'} ORDER BY c.last_customer_at DESC LIMIT 1`, req.user.role === 'admin' ? [lead.id, req.user.org] : [lead.id, req.user.org, req.user.id]);
+    if (!c) { failed.push({ id: lead.id, reason: 'No connected WhatsApp conversation with a customer reply in the last 24 hours.' }); continue; }
+    try { await meta.sendText(c, meta.normPhone(lead.phone), text.trim()); }
+    catch { failed.push({ id: lead.id, reason: 'WhatsApp rejected the message. Check the connection before retrying.' }); continue; }
+    await q("INSERT INTO chat_messages(chat_id,sender,body) VALUES ($1,'agent',$2)", [c.id, text.trim()]);
+    await q('UPDATE chats SET last_agent_at=now(),pending_ai_at=NULL WHERE id=$1', [c.id]);
+    sent.push(lead.id);
+  }
+  res.json({ sent, failed });
+}));
+
 r.get('/leads/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => {
   const l = await leadFor(req.user, req.params.id);
   const [events, visits, chats, shares, assigned, broker, project, unit] = await Promise.all([
@@ -89,6 +149,10 @@ r.patch('/leads/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => {
   const l = await leadFor(req.user, req.params.id);
   const b = req.body || {};
   if (b.stage && !STAGES.includes(b.stage)) throw fail(400, 'Unknown stage');
+  const preferences = ['1 BHK','2 BHK','3 BHK','4 BHK','Parking','Home loan','Ready to move'];
+  const checklist = ['call_done','visit_done','documents_sent','pan_received','aadhaar_received','booking_form','agreement_signed'];
+  if (b.preferences !== undefined && (!Array.isArray(b.preferences) || b.preferences.length > preferences.length || b.preferences.some(v => !preferences.includes(v)))) throw fail(400, 'Invalid preferences');
+  if (b.checklist !== undefined && (!b.checklist || Array.isArray(b.checklist) || typeof b.checklist !== 'object' || Object.entries(b.checklist).some(([k,v]) => !checklist.includes(k) || typeof v !== 'boolean'))) throw fail(400, 'Invalid checklist');
   const followupAt = b.followup_at !== undefined ? (b.followup_at ? new Date(b.followup_at).toISOString() : null) : l.followup_at;
   const followupType = b.followup_type !== undefined ? b.followup_type : l.followup_type;
   const followupNote = b.followup_note !== undefined ? b.followup_note : l.followup_note;
@@ -98,10 +162,13 @@ r.patch('/leads/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => {
        purpose = COALESCE($6,purpose), timeline = COALESCE($7,timeline), notes = COALESCE($8,notes), stage = COALESCE($9,stage),
        temperature = COALESCE($10,temperature), project_id = COALESCE($11,project_id), unit_id = COALESCE($12,unit_id), lost_reason = COALESCE($13,lost_reason),
        followup_at = $14, followup_type = $15, followup_note = $16,
+       preferences = COALESCE($18::jsonb,preferences), checklist = COALESCE($19::jsonb,checklist),
        first_touch_at = COALESCE(first_touch_at, CASE WHEN assigned_to = $17 THEN now() END), updated_at = now()
      WHERE id = $1 RETURNING *`,
     [l.id, b.name, b.email, b.budget, b.config_pref, b.purpose, b.timeline, b.notes, b.stage, b.temperature, b.project_id, b.unit_id, b.lost_reason,
-     followupAt, followupType, followupNote, req.user.id]);
+     followupAt, followupType, followupNote, req.user.id, b.preferences === undefined ? null : JSON.stringify(b.preferences), b.checklist === undefined ? null : JSON.stringify(b.checklist)]);
+
+  if (b.checklist !== undefined) await logLead(l.id, req.user.id, 'note', `Checklist updated: ${Object.entries(b.checklist).filter(([k,v]) => l.checklist?.[k] !== v).map(([k,v]) => `${k.replaceAll('_',' ')}: ${v ? 'done' : 'pending'}`).join(', ')}`);
 
   if (b.stage && b.stage !== l.stage) await logLead(l.id, req.user.id, 'stage', `Stage: ${l.stage.replace('_', ' ')} → ${b.stage.replace('_', ' ')}${b.lost_reason ? ` (${b.lost_reason})` : ''}`);
 

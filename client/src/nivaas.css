@@ -1288,3 +1288,13 @@ a.btn{text-decoration:none}
   }
 }
 
+.bulkbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:14px; margin-bottom:16px; background:var(--panel-2); border:1px solid var(--line); border-radius:12px; }
+.bulkbar .select { width:auto; max-width:240px; }
+.checkcell { width:44px; text-align:center; }
+.checkcell input, .crm-check input { width:18px; height:18px; accent-color:#ff982b; cursor:pointer; flex-shrink:0; }
+.checkcell input:focus-visible, .crm-check input:focus-visible { outline:2px solid #ff982b; outline-offset:3px; }
+tr.lead-selected { background:var(--panel-2); box-shadow:inset 3px 0 #ff982b; }
+.crm-checklist { margin:18px 0; padding:14px; border:1px solid var(--line); border-radius:12px; min-width:0; }
+.crm-checklist legend { font-weight:700; padding:0 6px; }
+.crm-check-options { display:flex; flex-wrap:wrap; gap:12px 20px; }
+.crm-check { display:inline-flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; min-height:32px; }
