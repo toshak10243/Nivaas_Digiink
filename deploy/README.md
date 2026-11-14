@@ -1,6 +1,6 @@
 ﻿# Checkbox and bulk action release
 
-Live deployment: `root@200.234.46.234`, application `/var/www/nivaas`, PM2 process `nivaas`, domain `https://nivaas.digiinksolutions.com`.
+Live deployment: `root@200.234.46.234`, application `/var/www/nivaas`, PM2 process `nivaas`, domain `https://nivass.digiinksolutions.com`.
 
 - Leads > List: select rows or all visible leads. Changing filters clears selection.
 - Bulk stage updates and follow-up completion respect lead ownership. Transfers and permanent deletion are admin-only; booked leads are protected.
@@ -11,3 +11,4 @@ Live deployment: `root@200.234.46.234`, application `/var/www/nivaas`, PM2 proce
 Validation: from `server`, run `npm run test:checkboxes` against an initialized development database. It creates temporary test organizations and removes them in a finally block. Do not run this test against production. From `client`, run `npm run build`.
 
 Back up source and database before deploying. Keep server/.env and uploads on the VPS. Run `node db/migrations.js` from the server directory, then restart only the `nivaas` PM2 process. Verify `/health` and compare the served JS/CSS hashes with the release build.
+
