@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/index.js';
 import { Icon, Pill, Modal, Seg, Field, useLoad, Loading, Empty } from '../components/ui.jsx';
 import { money, inr, sqft, date } from '../lib/format.js';
@@ -146,6 +146,9 @@ export default function Inventory({ me, say, go, params = [] }) {
 function UnitDrawer({ unit: u, project, me, say, go, reload, reloadProject, onShare, onOpenEmi, onOpenCostSheet }) {
   const role = me.user.role;
   const type = project.unit_types.find(t => t.id === u.unit_type_id);
+  const unitMedia = (project.media || []).filter(m => m.unit_type_id === u.unit_type_id && ['image', 'video', 'floorplan'].includes(m.kind));
+  const floorplan = unitMedia.find(m => m.kind === 'floorplan')?.url || type?.floorplan_url;
+  const flatGallery = unitMedia.filter(m => m.kind === 'image' || m.kind === 'video');
   const cs = costSheet(project, type, u);
   const [book, setBook] = useState(false);
   const [edit, setEdit] = useState(false);
@@ -170,11 +173,18 @@ function UnitDrawer({ unit: u, project, me, say, go, reload, reloadProject, onSh
         <Pill s={u.status} />
       </header>
       <div className="inventory-detail-content">
-      {type?.floorplan_url ? <img className="fpimg" src={api.media(type.floorplan_url)} alt={`${type.name} floor plan`} /> : <div className="inventory-no-floorplan"><Icon name="image" /><span>No floor plan available</span></div>}
+      {role === 'admin' && type && <FlatMediaUploader projectId={project.id} type={type} say={say} onUploaded={() => { reloadProject(); reload(); }} />}
+      {floorplan ? <img className="fpimg" src={api.media(floorplan)} alt={`${type.name} floor plan`} /> : <div className="inventory-no-floorplan"><Icon name="image" /><span>No floor plan available</span></div>}
       <div className="specs">
         <div><span>Carpet</span><b>{sqft(u.carpet_sqft)}</b></div><div><span>Built-up</span><b>{sqft(u.builtup_sqft)}</b></div>
         <div><span>Super built-up</span><b>{sqft(u.super_sqft)}</b></div><div><span>Price</span><b>{money(cs.total)}</b></div>
       </div>
+      {flatGallery.length > 0 && <div className="inventory-flat-gallery" aria-label={`${type?.name || 'Flat'} photos and videos`}>
+        <b>{type?.name} photos & videos</b>
+        <div>{flatGallery.map(media => media.kind === 'video'
+          ? <video key={media.id} src={api.media(media.url)} controls preload="metadata" aria-label={media.title || `${type?.name} video`} />
+          : <img key={media.id} src={api.media(media.url)} alt={media.title || `${type?.name} interior`} loading="lazy" />)}</div>
+      </div>}
 
       {u.status === 'hold' && <div className="note"><b>On hold</b> by {mine ? 'you' : u.hold_by_name} until {date(u.hold_until)}.</div>}
       {['booked', 'sold'].includes(u.status) && <div className="note"><b>{u.status === 'sold' ? 'Sold' : 'Booked'}</b> {u.booking_date ? 'on ' + date(u.booking_date) : ''}{u.sold_by_name ? ` by ${u.sold_by_name}` : ''}{u.broker_name ? ` with broker ${u.broker_name}` : ''}{u.customer_name ? ` · Buyer: ${u.customer_name}` : ''}
@@ -208,6 +218,39 @@ function UnitDrawer({ unit: u, project, me, say, go, reload, reloadProject, onSh
       </div>
     </section>
   );
+}
+
+function FlatMediaUploader({ projectId, type, say, onUploaded }) {
+  const inputs = useRef({});
+  const [busyKind, setBusyKind] = useState('');
+  const options = [
+    { kind: 'image', label: 'Photos', accept: 'image/*' },
+    { kind: 'video', label: 'Videos', accept: 'video/*' },
+    { kind: 'floorplan', label: 'Layout', accept: 'image/*' },
+  ];
+  const upload = async (kind, files) => {
+    if (!files?.length) return;
+    setBusyKind(kind);
+    const form = new FormData();
+    [...files].forEach(file => form.append('files', file));
+    form.append('kind', kind);
+    form.append('unit_type_id', type.id);
+    try {
+      await api.post(`/api/projects/${projectId}/media`, form);
+      say(`${type.name} ${kind === 'floorplan' ? 'layout' : kind === 'video' ? 'videos' : 'photos'} uploaded`);
+      onUploaded();
+    } catch (error) { say(error.message); }
+    finally { setBusyKind(''); }
+  };
+  return <div className="inventory-flat-uploader">
+    <b>Media for {type.name}</b>
+    <div>{options.map(option => <React.Fragment key={option.kind}>
+      <input ref={node => { inputs.current[option.kind] = node; }} type="file" accept={option.accept} multiple hidden onChange={event => { upload(option.kind, event.target.files); event.target.value = ''; }} />
+      <button className="btn sm" disabled={!!busyKind} onClick={() => inputs.current[option.kind]?.click()}>
+        <Icon name="upload" />{busyKind === option.kind ? 'Uploading…' : `Add ${option.label.toLowerCase()}`}
+      </button>
+    </React.Fragment>)}</div>
+  </div>;
 }
 
 function InventoryKpi({ icon, tone, label, value }) {

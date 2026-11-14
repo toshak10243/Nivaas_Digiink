@@ -279,13 +279,17 @@ r.patch('/units/:id', h(async (req, res) => {
 r.post('/projects/:id/media', allow('admin'), upload.array('files', 20), verifyUploadedFiles, h(async (req, res) => {
   const p = await one(`SELECT id FROM projects WHERE id = $1 AND org_id = $2`, [req.params.id, req.user.org]);
   if (!p) throw fail(404, 'Project not found');
+  const unitTypeId = req.body.unit_type_id || null;
+  if (unitTypeId && !(await one(`SELECT id FROM unit_types WHERE id = $1 AND project_id = $2`, [unitTypeId, p.id]))) throw fail(400, 'Selected flat type does not belong to this project');
+  if (req.body.kind === 'floorplan' && !unitTypeId) throw fail(400, 'Select a flat type for its floor plan');
   const out = [];
   for (const f of req.files || []) {
     const kind = f.mimetype.startsWith('video') ? 'video' : f.mimetype === 'application/pdf' ? 'brochure' : (req.body.kind === 'floorplan' ? 'floorplan' : 'image');
     out.push(await one(`INSERT INTO media (org_id, project_id, unit_type_id, kind, url, title) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [req.user.org, p.id, req.body.unit_type_id || null, kind, fileUrl(req, f), req.body.title || f.originalname.replace(/\.[^.]+$/, '')]));
+      [req.user.org, p.id, unitTypeId, kind, fileUrl(req, f), req.body.title || f.originalname.replace(/\.[^.]+$/, '')]));
+    if (kind === 'floorplan' && unitTypeId) await q(`UPDATE unit_types SET floorplan_url = $2 WHERE id = $1`, [unitTypeId, fileUrl(req, f)]);
   }
-  if (req.body.youtube) out.push(await one(`INSERT INTO media (org_id, project_id, kind, url, title) VALUES ($1,$2,'youtube',$3,$4) RETURNING *`, [req.user.org, p.id, req.body.youtube, req.body.title || 'Video']));
+  if (req.body.youtube) out.push(await one(`INSERT INTO media (org_id, project_id, unit_type_id, kind, url, title) VALUES ($1,$2,$3,'youtube',$4,$5) RETURNING *`, [req.user.org, p.id, unitTypeId, req.body.youtube, req.body.title || 'Video']));
   res.json(out);
 }));
 r.patch('/media/:id', allow('admin'), h(async (req, res) => {

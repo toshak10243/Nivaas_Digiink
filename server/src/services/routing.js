@@ -32,7 +32,7 @@ export async function pickAssignee(lead, { exclude = [] } = {}) {
 }
 
 /** Assigns (or re-assigns) a lead and moves the chat to the assignee's own WhatsApp number. */
-export async function assignLead(leadId, { actorId = null, userId = null, reason = 'auto', exclude = [] } = {}) {
+export async function assignLead(leadId, { actorId = null, userId = null, reason = 'auto', exclude = [], handoff = true } = {}) {
   const lead = await one(`SELECT * FROM leads WHERE id = $1`, [leadId]);
   if (!lead) return null;
   const who = userId ? await one(`SELECT id, name, role, profile FROM users WHERE id = $1 AND org_id = $2`, [userId, lead.org_id]) : await pickAssignee(lead, { exclude });
@@ -43,7 +43,7 @@ export async function assignLead(leadId, { actorId = null, userId = null, reason
   await logLead(lead.id, actorId, reassign ? 'reassigned' : 'assigned', `${reassign ? 'Reassigned' : 'Assigned'} to ${who.name}${reason === 'sla' ? ' (no response in time)' : reason === 'manual' ? '' : ' automatically'}`);
   await notify(lead.org_id, who.id, 'lead_assigned', `New lead: ${lead.name || lead.phone}${lead.config_pref ? ' · ' + lead.config_pref : ''}${lead.budget ? ' · ' + lead.budget : ''}`, `/leads/${lead.id}`);
   if (reassign) await notify(lead.org_id, lead.assigned_to, 'lead_removed', `${lead.name || lead.phone} was moved to ${who.name}`, `/leads/${lead.id}`);
-  await handoffChat(lead, who);
+  if (handoff) await handoffChat(lead, who);
   return who;
 }
 

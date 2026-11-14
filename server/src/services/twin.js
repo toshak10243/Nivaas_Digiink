@@ -6,7 +6,6 @@ import { config } from '../config.js';
 import * as meta from './meta.js';
 import { notify, logLead } from './notify.js';
 import { assignLead } from './routing.js';
-import { settingsOf } from '../settings.js';
 import { costSheet, inr } from '../lib/pricing.js';
 import { callGemini } from './gemini.js';
 
@@ -92,11 +91,11 @@ ${kb}
 
 RULES
 - Reply in the customer's language and style (Roman Hinglish → natural Hinglish/Hindi; English → English). 1–3 short sentences, WhatsApp tone.
-- Answer first, then ask ONE missing detail: preferred configuration (2/3/4 BHK), budget, self-use or investment, when they want to buy, a good day/time for a site visit.
+- Answer first, then ask ONE missing detail: preferred configuration (1/2/3/4 BHK), budget, self-use or investment, when they want to buy, a good day/time for a site visit.
 - Quote only the prices above. Never offer a discount; say ${agent ? agent.name.split(' ')[0] : 'the team'} will discuss final pricing at the visit.
 - Specific unit asked (e.g. "302-F") → say if it is available right now from the list; if not, suggest the closest available ones.
-- When they agree to a day and time for a site visit, confirm it and put it in visit_at (ISO 8601, Asia/Kolkata, today is ${new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })}).
-- If the customer asks for flat photos or a floor plan/layout, set photo_bhk to the requested 2, 3, or 4. If they do not specify a configuration, use their known preference only when clear; otherwise ask which BHK they want and leave photo_bhk empty. Only request media for configurations listed above.
+- When the customer clearly agrees to a site visit date, book it automatically and put it in visit_at (ISO 8601, Asia/Kolkata). If they confirm a date without a time, use 11:00 AM IST and say so in your reply. Resolve a date without a year to the next upcoming occurrence. Do not book vague interest, a date proposed by you, or a date the customer has not accepted. Today is ${new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })}.
+- If the customer asks for flat photos or a floor plan/layout, set photo_bhk to the requested 1, 2, 3, or 4. If they do not specify a configuration, use their known preference only when clear; otherwise ask which BHK they want and leave photo_bhk empty. Only request media for configurations listed above.
 - Loan, legal, possession-delay or complaint questions → say the person will call back, set need_human.
 Existing visits: ${JSON.stringify(visits)}
 Lead so far: ${JSON.stringify({ name: lead.name, budget: lead.budget, config_pref: lead.config_pref, purpose: lead.purpose, timeline: lead.timeline })}
@@ -117,6 +116,11 @@ Return ONLY JSON:
     const prompt = messages.map(m => `${m.role === 'user' ? 'Customer' : 'Assistant'}: ${m.content}`).join('\n\n') + '\n\nAssistant (respond in JSON):';
     const text = await callGemini({ prompt, system, jsonMode: true, temperature: 0.3 });
     out = parse(text);
+    out.visit_at = normalizeVisitAt(out.visit_at);
+    if (out.visit_at) {
+      const dateText = new Date(out.visit_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
+      if (!String(out.reply || '').toLowerCase().includes(dateText.toLowerCase())) out.reply = `${String(out.reply || '').trim()} Site visit confirmed for ${dateText} IST.`.trim();
+    }
   } catch (e) {
     await notify(chat.org_id, agent?.id || null, 'chat', `AI twin could not reply to ${lead.name || lead.phone} (${e.message}). Please reply.`, `/chats/${chat.id}`);
     return;
@@ -131,7 +135,7 @@ Return ONLY JSON:
   const photoAsk = /\b(photo|photos|picture|pictures|image|images|pic|pics|interior|sample\s*flat)\b|फोटो|तस्वीर/i.test(lastCustomerMessage);
   const layoutAsk = /\b(layout|floor\s*plan|floorplan|blueprint)\b|नक्शा|naksha/i.test(lastCustomerMessage);
   const mediaAsk = photoAsk || layoutAsk;
-  const mediaBhk = mediaAsk ? Number(String(out.photo_bhk || '').match(/[234]/)?.[0] || String(lead.config_pref || '').match(/[234]/)?.[0]) : 0;
+  const mediaBhk = mediaAsk ? Number(String(out.photo_bhk || '').match(/[1234]/)?.[0] || String(lead.config_pref || '').match(/[1234]/)?.[0]) : 0;
   if (mediaBhk) {
     const requestedKinds = layoutAsk && photoAsk ? ['image', 'floorplan'] : [layoutAsk ? 'floorplan' : 'image'];
     const mediaToSend = [];
@@ -168,29 +172,35 @@ async function apply(lead, out, agent, chat) {
              stage = CASE WHEN stage = 'new' THEN 'contacted' ELSE stage END, updated_at = now() WHERE id = $1`,
     [lead.id, L.name || '', L.email || '', L.budget || '', L.config_pref || '', L.purpose || '', L.timeline || '', out.summary || '', temp, unit?.id || null]);
 
-  if (out.visit_at && !isNaN(new Date(out.visit_at))) {
-    const exists = await one(`SELECT id FROM site_visits WHERE lead_id = $1 AND status = 'scheduled'`, [lead.id]);
-    if (!exists) {
-      await q(`INSERT INTO site_visits (org_id, lead_id, project_id, agent_id, scheduled_at) VALUES ($1,$2,$3,$4,$5)`,
-        [lead.org_id, lead.id, lead.project_id, agent?.id || lead.assigned_to, out.visit_at]);
-      await q(`UPDATE leads SET stage = 'visit_scheduled' WHERE id = $1 AND stage IN ('new','contacted','qualified')`, [lead.id]);
-      const when = new Date(out.visit_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
-      await logLead(lead.id, null, 'visit', `AI booked a site visit for ${when}`);
-      await notify(lead.org_id, agent?.id || lead.assigned_to || null, 'visit', `Site visit booked by AI: ${lead.name || lead.phone}, ${when}`, `/leads/${lead.id}`);
-    }
+  let routed = null;
+  if (!lead.assigned_to) {
+    routed = await assignLead(lead.id, agent?.role === 'sales' ? { userId: agent.id, handoff: false } : {});
+    if (routed && agent?.role === 'sales') await q(`UPDATE chats SET agent_id = $2 WHERE id = $1`, [chat.id, routed.id]);
+    lead.assigned_to = routed?.id || lead.assigned_to;
+  }
+
+  if (out.visit_at) {
+    const existing = await one(`SELECT id, scheduled_at FROM site_visits WHERE lead_id = $1 AND status IN ('scheduled','confirmed') ORDER BY scheduled_at LIMIT 1`, [lead.id]);
+    const visit = existing
+      ? await one(`UPDATE site_visits SET scheduled_at = $2, agent_id = COALESCE($3,agent_id) WHERE id = $1 RETURNING *`, [existing.id, out.visit_at, agent?.id || routed?.id || lead.assigned_to])
+      : await one(`INSERT INTO site_visits (org_id, lead_id, project_id, agent_id, scheduled_at) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [lead.org_id, lead.id, lead.project_id, agent?.id || routed?.id || lead.assigned_to, out.visit_at]);
+    await q(`UPDATE leads SET stage = 'visit_scheduled', first_touch_at = COALESCE(first_touch_at, now()), updated_at = now() WHERE id = $1 AND stage NOT IN ('booked','lost')`, [lead.id]);
+    const when = new Date(visit.scheduled_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
+    await logLead(lead.id, null, 'visit', `${existing ? 'AI updated the site visit to' : 'AI booked a site visit for'} ${when} IST`);
+    await q(`INSERT INTO chat_messages (chat_id, sender, body) VALUES ($1,'ai',$2)`, [chat.id, `Site visit confirmed for ${when} IST.`]);
+    await notify(lead.org_id, agent?.id || routed?.id || lead.assigned_to || null, 'visit', `Site visit ${existing ? 'updated' : 'booked'} by AI: ${lead.name || lead.phone}, ${when} IST`, `/leads/${lead.id}`);
   }
   if (out.need_human) await notify(lead.org_id, agent?.id || lead.assigned_to || null, 'chat', `${lead.name || lead.phone} needs you: ${out.need_human}`, `/chats/${chat.id}`);
+}
 
-  // Main-number conversations: once qualified (or a visit is booked), hand over to a person.
-  if (!agent) {
-    const fresh = await one(`SELECT * FROM leads WHERE id = $1`, [lead.id]);
-    const org = await one(`SELECT settings FROM orgs WHERE id = $1`, [lead.org_id]);
-    const qualified = fresh.stage === 'visit_scheduled' || (fresh.config_pref && fresh.budget) || temp === 'hot';
-    if (!fresh.assigned_to && (settingsOf(org).routing.assign_on === 'immediately' || qualified)) {
-      if (fresh.stage === 'contacted') await q(`UPDATE leads SET stage = 'qualified' WHERE id = $1`, [lead.id]);
-      await assignLead(lead.id);
-    }
-  }
+function normalizeVisitAt(value) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  let source = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(source)) source += 'T11:00:00+05:30';
+  else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/.test(source)) source += '+05:30';
+  const date = new Date(source);
+  return Number.isFinite(date.getTime()) && date.getTime() > Date.now() ? date.toISOString() : null;
 }
 
 function parse(text) {

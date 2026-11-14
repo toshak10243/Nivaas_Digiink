@@ -1844,6 +1844,13 @@ a.btn{text-decoration:none}
 .inventory-detail-content .fpimg { max-height:210px; object-fit:cover; }
 .inventory-detail-content .specs { grid-template-columns:repeat(2,minmax(0,1fr)); }
 .inventory-detail-content .specs div { padding:10px; }
+.inventory-flat-gallery { display:flex; flex-direction:column; gap:8px; }
+.inventory-flat-gallery > b { font-size:13px; }
+.inventory-flat-gallery > div { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:8px; }
+.inventory-flat-gallery img,.inventory-flat-gallery video { display:block; width:100%; aspect-ratio:4/3; object-fit:cover; border:1px solid var(--line); border-radius:10px; background:var(--panel-2); }
+.inventory-flat-uploader { display:flex; flex-direction:column; gap:8px; padding:10px; border:1px dashed var(--line-2); border-radius:12px; background:var(--panel-2); }
+.inventory-flat-uploader > b { font-size:13px; }
+.inventory-flat-uploader > div { display:flex; flex-wrap:wrap; gap:7px; }
 .inventory-detail-content .drawer-actions { gap:7px; }
 .inventory-detail-content .drawer-actions .btn { min-height:38px; padding:8px 10px; font-size:12px; }
 .inventory-detail-empty { min-height:260px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; color:var(--ink-3); text-align:center; }

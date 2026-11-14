@@ -6,6 +6,7 @@ import { one, many, q } from '../db.js';
 import { h, allow, fail } from '../lib/auth.js';
 import { settingsOf, merge } from '../settings.js';
 import { config } from '../config.js';
+import { maskPhoneRows } from '../lib/privacy.js';
 
 const r = Router();
 const USER_COLS = 'id, role, name, email, phone, active, profile, last_login, created_at';
@@ -69,7 +70,9 @@ r.get('/dashboard', h(async (req, res) => {
                                 WHERE c.agent_id = $1 AND c.last_customer_at IS NOT NULL AND (c.last_agent_at IS NULL OR c.last_agent_at < c.last_customer_at)
                                 AND NOT EXISTS (SELECT 1 FROM chat_messages m WHERE m.chat_id = c.id AND m.sender = 'ai' AND m.created_at > c.last_customer_at) ORDER BY c.last_customer_at DESC LIMIT 6`, [id]);
     const me = await one(`SELECT profile FROM users WHERE id = $1`, [id]);
-    return res.json({ role, pipeline, visits, followups, sold, earnings: earn, waiting, target: me.profile?.target_units || 0 });
+    return res.json({ role, pipeline,
+      visits: maskPhoneRows(visits, 'phone', role), followups: maskPhoneRows(followups, 'phone', role), sold, earnings: earn,
+      waiting: maskPhoneRows(waiting, 'phone', role), target: me.profile?.target_units || 0 });
   }
   if (role === 'maintenance') {
     const t = await one(`SELECT count(*) FILTER (WHERE status IN ('open','in_progress'))::int AS open, count(*) FILTER (WHERE status IN ('open','in_progress') AND assigned_to = $2)::int AS mine,

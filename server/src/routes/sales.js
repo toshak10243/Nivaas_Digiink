@@ -11,6 +11,7 @@ import * as meta from '../services/meta.js';
 import { config } from '../config.js';
 import { resolveObjection, generateHandoverBrief, generateVisitPassportData } from '../services/gemini.js';
 import { number, date as dateValue, oneOf } from '../lib/validate.js';
+import { maskPhoneField, maskPhoneRows } from '../lib/privacy.js';
 
 import { validatePreview, reservePreview, previewReply } from '../services/ai-preview.js';
 
@@ -45,12 +46,12 @@ r.get('/leads', allow('admin', 'sales', 'broker'), h(async (req, res) => {
   let extra = '';
   for (const k of ['stage', 'project_id', 'assigned_to', 'source', 'temperature']) if (req.query[k]) { vals.push(req.query[k]); extra += ` AND l.${k} = $${vals.length}`; }
   if (req.query.q) { vals.push('%' + req.query.q + '%'); extra += ` AND (l.name ILIKE $${vals.length} OR l.phone ILIKE $${vals.length})`; }
-  res.json(await many(
+  res.json(maskPhoneRows(await many(
     `SELECT l.*, a.name AS assigned_name, a.role AS assigned_role, b.name AS broker_name, p.name AS project_name, u.unit_no,
        (SELECT scheduled_at FROM site_visits v WHERE v.lead_id = l.id AND v.status IN ('scheduled','confirmed') ORDER BY scheduled_at LIMIT 1) AS next_visit
      FROM leads l LEFT JOIN users a ON a.id = l.assigned_to LEFT JOIN users b ON b.id = l.broker_id
      LEFT JOIN projects p ON p.id = l.project_id LEFT JOIN units u ON u.id = l.unit_id
-     WHERE l.org_id = $1${s.sql}${extra} ORDER BY l.updated_at DESC LIMIT 500`, vals));
+     WHERE l.org_id = $1${s.sql}${extra} ORDER BY l.updated_at DESC LIMIT 500`, vals), 'phone', req.user.role));
 }));
 
 r.get('/leads/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => {
@@ -65,7 +66,7 @@ r.get('/leads/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => {
     l.project_id ? one(`SELECT id, name, map_url, location FROM projects WHERE id = $1`, [l.project_id]) : null,
     l.unit_id ? one(`SELECT id, unit_no, status FROM units WHERE id = $1`, [l.unit_id]) : null,
   ]);
-  res.json({ ...l, events, visits, chats, shares, assigned, broker, project, unit });
+  res.json({ ...maskPhoneField(l, 'phone', req.user.role), events, visits, chats, shares, assigned, broker, project, unit });
 }));
 
 /** Manual lead, walk-in, or a broker registering their client (lead protection: first registration wins). */
@@ -96,7 +97,7 @@ r.post('/leads', allow('admin', 'sales', 'broker'), h(async (req, res) => {
   }
   if (isBroker) await notify(req.user.org, null, 'lead', `Broker ${req.user.name} registered ${b.name}`, `/leads/${lead.id}`);
   if (req.user.role === 'admin' && !lead.assigned_to && b.auto_assign) await assignLead(lead.id, { actorId: req.user.id });
-  res.json(lead);
+  res.json(maskPhoneField(lead, 'phone', req.user.role));
 }));
 
 r.patch('/leads/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => {
@@ -136,7 +137,7 @@ r.patch('/leads/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => {
     }
   }
 
-  res.json(row);
+  res.json(maskPhoneField(row, 'phone', req.user.role));
 }));
 
 r.post('/leads/:id/assign', allow('admin'), h(async (req, res) => {
@@ -160,9 +161,9 @@ r.post('/leads/:id/events', allow('admin', 'sales', 'broker'), h(async (req, res
 // ---------- site visits ----------
 r.get('/visits', allow('admin', 'sales', 'broker'), h(async (req, res) => {
   const s = scope(req.user);
-  res.json(await many(`SELECT v.*, l.name, l.phone, l.config_pref, p.name AS project_name, p.map_url, p.location, a.name AS agent FROM site_visits v JOIN leads l ON l.id = v.lead_id
+  res.json(maskPhoneRows(await many(`SELECT v.*, l.name, l.phone, l.config_pref, p.name AS project_name, p.map_url, p.location, a.name AS agent FROM site_visits v JOIN leads l ON l.id = v.lead_id
                        LEFT JOIN projects p ON p.id = v.project_id LEFT JOIN users a ON a.id = v.agent_id
-                       WHERE v.org_id = $1${s.sql} AND v.scheduled_at > now() - interval '60 days' ORDER BY v.scheduled_at DESC`, [req.user.org, ...s.vals]));
+                       WHERE v.org_id = $1${s.sql} AND v.scheduled_at > now() - interval '60 days' ORDER BY v.scheduled_at DESC`, [req.user.org, ...s.vals]), 'phone', req.user.role));
 }));
 
 r.post('/visits', allow('admin', 'sales', 'broker'), h(async (req, res) => {
@@ -479,12 +480,12 @@ r.patch('/chats/:id', allow('admin', 'sales'), h(async (req, res) => {
 r.get('/bookings', h(async (req, res) => {
   const { role, id, org } = req.user;
   const where = role === 'admin' ? '' : role === 'sales' ? 'AND b.sold_by = $2' : role === 'broker' ? 'AND b.broker_id = $2' : role === 'customer' ? 'AND b.customer_id = $2' : 'AND false';
-  res.json(await many(
+  res.json(maskPhoneRows(await many(
     `SELECT b.*, u.unit_no, p.name AS project_name, c.name AS customer_name, c.phone AS customer_phone, s.name AS sold_by_name, br.name AS broker_name,
        (SELECT coalesce(sum(amount),0) FROM payments x WHERE x.booking_id = b.id) AS paid
      FROM bookings b JOIN units u ON u.id = b.unit_id JOIN projects p ON p.id = u.project_id
      LEFT JOIN users c ON c.id = b.customer_id LEFT JOIN users s ON s.id = b.sold_by LEFT JOIN users br ON br.id = b.broker_id
-     WHERE b.org_id = $1 ${where} ORDER BY b.created_at DESC`, role === 'admin' ? [org] : [org, id]));
+     WHERE b.org_id = $1 ${where} ORDER BY b.created_at DESC`, role === 'admin' ? [org] : [org, id]), 'customer_phone', role));
 }));
 
 r.get('/bookings/:id', h(async (req, res) => {
@@ -498,7 +499,7 @@ r.get('/bookings/:id', h(async (req, res) => {
   if (!mine) throw fail(403, 'No access');
   b.payments = await many(`SELECT * FROM payments WHERE booking_id = $1 ORDER BY paid_on`, [b.id]);
   b.commissions = req.user.role === 'customer' ? [] : await many(`SELECT c.*, u.name FROM commissions c JOIN users u ON u.id = c.user_id WHERE c.booking_id = $1 ${req.user.role === 'admin' ? '' : 'AND c.user_id = $2'}`, req.user.role === 'admin' ? [b.id] : [b.id, req.user.id]);
-  res.json(b);
+  res.json(maskPhoneField(b, 'customer_phone', req.user.role));
 }));
 
 /** Book a unit. Creates the customer login, payment schedule, broker commission and sales incentive in one go. */

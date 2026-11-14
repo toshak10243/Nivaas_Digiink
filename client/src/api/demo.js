@@ -288,7 +288,7 @@ on('POST', '/api/projects/:id/towers', (p, b) => {
   }
   return tw;
 });
-on('POST', '/api/projects/:id/media', (p, b) => { need('admin'); const out = []; for (const f of b.getAll ? b.getAll('files') : []) { const m = { id: nid('m'), project_id: p.id, kind: f.type.startsWith('video') ? 'video' : f.type === 'application/pdf' ? 'brochure' : (b.get('kind') === 'floorplan' ? 'floorplan' : 'image'), url: URL.createObjectURL(f), title: b.get('title') || f.name.replace(/\.[^.]+$/, ''), sort: 99 }; mediaRows.push(m); out.push(m); } return out; });
+on('POST', '/api/projects/:id/media', (p, b) => { need('admin'); const out = []; for (const f of b.getAll ? b.getAll('files') : []) { const kind = f.type.startsWith('video') ? 'video' : f.type === 'application/pdf' ? 'brochure' : (b.get('kind') === 'floorplan' ? 'floorplan' : 'image'); const m = { id: nid('m'), project_id: p.id, unit_type_id: b.get('unit_type_id') || null, kind, url: URL.createObjectURL(f), title: b.get('title') || f.name.replace(/\.[^.]+$/, ''), sort: 99 }; mediaRows.push(m); if (kind === 'floorplan') { const type = T(m.unit_type_id); if (type) type.floorplan_url = m.url; } out.push(m); } return out; });
 on('DELETE', '/api/media/:id', p => { const i = mediaRows.findIndex(m => m.id === p.id); if (i >= 0) mediaRows.splice(i, 1); return null; });
 on('POST', '/api/projects/:id/updates', (p, b) => {
   need('admin', 'sales');

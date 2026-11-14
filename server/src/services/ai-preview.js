@@ -59,9 +59,9 @@ Return only JSON: {"reply":"your customer-facing response"}.`;
   const mediaRequested = mediaTerm.test(latest) || (followup && recentCustomers.some(m => mediaTerm.test(m)));
   const photoRequested = photoTerm.test(latest) || (followup && recentCustomers.some(m => photoTerm.test(m)));
   const layoutRequested = layoutTerm.test(latest) || (followup && recentCustomers.some(m => layoutTerm.test(m))) || (followup && input.history.some(m => m.sender === 'ai' && layoutTerm.test(m.body)));
-  const bhk = Number((latest.match(/\b([234])\s*bhk\b/i) || [])[1]
-    || input.history.slice().reverse().map(m => (m.body.match(/\b([234])\s*bhk\b/i) || [])[1]).find(Boolean)
-    || (String(lead.config_pref || '').match(/[234]/) || [])[0]);
+  const bhk = Number((latest.match(/\b([1234])\s*bhk\b/i) || [])[1]
+    || input.history.slice().reverse().map(m => (m.body.match(/\b([1234])\s*bhk\b/i) || [])[1]).find(Boolean)
+    || (String(lead.config_pref || '').match(/[1234]/) || [])[0]);
   let attachments = [];
   if (mediaRequested && bhk) {
     const kinds = layoutRequested && photoRequested ? ['image', 'floorplan'] : [layoutRequested ? 'floorplan' : 'image'];

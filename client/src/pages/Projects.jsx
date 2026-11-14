@@ -281,9 +281,11 @@ function Media({ p, say, reload, save }) {
   const [kind, setKind] = useState('image');
   const [typeId, setTypeId] = useState(p.unit_types[0]?.id || '');
   const [busy, setBusy] = useState(false);
+  const visibleMedia = p.media.filter(m => typeId ? m.unit_type_id === typeId : !m.unit_type_id);
   const upload = async files => {
     if (!files.length) return; setBusy(true);
-    const fd = new FormData(); [...files].forEach(f => fd.append('files', f)); fd.append('kind', kind); if (kind === 'floorplan') fd.append('unit_type_id', typeId);
+    if (kind === 'floorplan' && !typeId) { say('Select a flat type before uploading its floor plan'); setBusy(false); return; }
+    const fd = new FormData(); [...files].forEach(f => fd.append('files', f)); fd.append('kind', kind); if (typeId) fd.append('unit_type_id', typeId);
     try { await api.post(`/api/projects/${p.id}/media`, fd); say(`${files.length} file(s) uploaded`); reload(); } catch (e) { say(e.message); }
     setBusy(false);
   };
@@ -292,18 +294,20 @@ function Media({ p, say, reload, save }) {
     <div className="card"><div className="card-b" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div className="uploadbar">
         <Seg value={kind} onChange={setKind} label="Upload as" options={[['image', 'Photos'], ['video', 'Videos'], ['floorplan', 'Floor plan'], ['brochure', 'Brochure PDF']]} />
-        {kind === 'floorplan' && <select className="select" style={{ width: 180 }} value={typeId} onChange={e => setTypeId(e.target.value)} aria-label="For unit type">{p.unit_types.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}</select>}
-        <button className="btn sun" disabled={busy} onClick={() => input.current.click()}><Icon name="upload" />{busy ? 'Uploading…' : 'Upload'}</button>
+        <select className="select" style={{ width: 200 }} value={typeId} onChange={e => setTypeId(e.target.value)} aria-label="Media flat type">
+          <option value="">Project-wide media</option>{p.unit_types.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+        </select>
+        <button className="btn sun" disabled={busy || (kind === 'floorplan' && !typeId)} onClick={() => input.current.click()}><Icon name="upload" />{busy ? 'Uploading…' : 'Upload'}</button>
         <input ref={input} type="file" hidden multiple accept={kind === 'video' ? 'video/*' : kind === 'brochure' ? 'application/pdf' : 'image/*'} onChange={e => { upload(e.target.files); e.target.value = ''; }} />
       </div>
-      <div className="mediagrid">{p.media.map(m => (
+      <div className="mediagrid">{visibleMedia.map(m => (
         <figure key={m.id} className="mitem">
           {m.kind === 'video' ? <video src={api.media(m.url)} muted controls preload="metadata" /> : m.kind === 'brochure' ? <span className="mdoc"><Icon name="file" />PDF</span> : m.kind === 'youtube' ? <span className="mdoc"><Icon name="play" />YouTube</span> : <img src={api.media(m.url)} alt={m.title} />}
           <figcaption><span>{m.title}</span><span className="muted">{m.kind}</span></figcaption>
           <div className="mact">{m.kind === 'image' && <button className="btn sm" onClick={() => save({ cover_url: m.url })}>{p.cover_url === m.url ? 'Cover ✓' : 'Make cover'}</button>}<button className="iconbtn" aria-label="Delete" onClick={() => del(m)}><Icon name="trash" /></button></div>
         </figure>
       ))}</div>
-      <p className="hint" style={{ margin: 0 }}>Photos up to 60 MB each. Videos play right inside the buyer’s link. For long films, upload to YouTube and paste the link via the API, or keep them under 60 MB.</p>
+      <p className="hint" style={{ margin: 0 }}>Flat photos, videos, and floor plans are linked to the selected configuration and shown only for that type in Inventory. Project-wide media stays separate.</p>
     </div></div>
   );
 }
