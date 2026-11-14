@@ -86,18 +86,26 @@ r.post('/bridge/leadsathi/:orgId', h(async (req, res) => {
       [org.id, project?.id || null, L.name || null, phone, L.id || null, qualified ? 'qualified' : 'contacted', temp, f.budget || null, f.config || f.configuration || null, f.purpose || null, f.timeline || null, L.summary || null]);
     await logLead(lead.id, null, 'created', `From LeadSathi AI (${L.channel_type || 'chat'})`);
   } else {
-    lead = await one(`UPDATE leads SET name = COALESCE(name,$2), temperature = $3, budget = COALESCE($4,budget), config_pref = COALESCE($5,config_pref), purpose = COALESCE($6,purpose),
+    lead = await one(`UPDATE leads SET name = CASE WHEN (source='leadsathi' AND source_ref=$10) OR lower(COALESCE(name,'')) IN ('test customer','customer','unknown') THEN COALESCE(NULLIF($2,''),name) ELSE COALESCE(name,NULLIF($2,'')) END, temperature = $3, budget = COALESCE($4,budget), config_pref = COALESCE($5,config_pref), purpose = COALESCE($6,purpose),
                         timeline = COALESCE($7,timeline), ai_summary = COALESCE($8,ai_summary), stage = CASE WHEN $9 AND stage IN ('new','contacted') THEN 'qualified' ELSE stage END, updated_at = now()
-                      WHERE id = $1 RETURNING *`, [lead.id, L.name || null, temp, f.budget || null, f.config || f.configuration || null, f.purpose || null, f.timeline || null, L.summary || null, qualified]);
+                      WHERE id = $1 RETURNING *`, [lead.id, L.name || null, temp, f.budget || null, f.config || f.configuration || null, f.purpose || null, f.timeline || null, L.summary || null, qualified, L.id || null]);
     await logLead(lead.id, null, 'ai', `LeadSathi: ${L.summary || event}`);
   }
-  if (f.visit && !(await one(`SELECT 1 FROM site_visits WHERE lead_id = $1 AND status = 'scheduled'`, [lead.id]))) {
-    const at = new Date(f.visit);
-    if (!isNaN(at)) await q(`INSERT INTO site_visits (org_id, lead_id, project_id, agent_id, scheduled_at) VALUES ($1,$2,$3,$4,$5)`, [org.id, lead.id, lead.project_id, lead.assigned_to, at]);
-  }
   const s = settingsOf(org).routing;
-  if (!lead.assigned_to && (s.assign_on === 'immediately' || lead.stage !== 'contacted')) await assignLead(lead.id);
-  else if (!lead.assigned_to) await notify(org.id, null, 'lead', `New lead from LeadSathi: ${lead.name || phone}`, `/leads/${lead.id}`);
+  if (!lead.assigned_to && (s.assign_on === 'immediately' || lead.stage !== 'contacted')) {
+    await assignLead(lead.id);
+    lead = await one('SELECT * FROM leads WHERE id=$1',[lead.id]);
+  } else if (!lead.assigned_to) await notify(org.id, null, 'lead', `New lead from LeadSathi: ${lead.name || phone}`, `/leads/${lead.id}`);
+  // A requested slot is scheduled pending confirmation, never marked confirmed.
+  const at = typeof f.visit === 'string' && /T\d{2}:\d{2}.*(?:Z|[+-]\d{2}:\d{2})$/.test(f.visit) ? new Date(f.visit) : null;
+  if (at && !isNaN(at) && at > new Date()) {
+    const active = await one("SELECT id FROM site_visits WHERE lead_id=$1 AND status IN ('scheduled','confirmed')",[lead.id]);
+    if (!active) {
+      await q(`INSERT INTO site_visits(org_id,lead_id,project_id,agent_id,scheduled_at) VALUES ($1,$2,$3,$4,$5)`,[org.id,lead.id,lead.project_id,lead.assigned_to,at]);
+      await q("UPDATE leads SET stage='visit_scheduled' WHERE id=$1 AND stage IN ('new','contacted','qualified')",[lead.id]);
+      await logLead(lead.id,null,'visit',`Site visit requested through LeadSathi for ${at.toISOString()}; sales team confirmation required.`);
+    }
+  }
   res.json({ ok: true, lead_id: lead.id });
 }));
 

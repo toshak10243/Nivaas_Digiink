@@ -58,9 +58,12 @@ function Thread({ id, me, say, go, onChange }) {
   const [c, reload] = useLoad(() => api.get('/api/chats/' + id), [id]);
   const [text, setText] = useState('');
   const [cust, setCust] = useState('');
+  const [testMessages, setTestMessages] = useState([]);
+  const [testText, setTestText] = useState('');
+  const [testError, setTestError] = useState('');
   const [busy, setBusy] = useState(false);
   const box = useRef(null);
-  useEffect(() => { box.current && (box.current.scrollTop = box.current.scrollHeight); }, [c?.messages?.length, busy]);
+  useEffect(() => { box.current && (box.current.scrollTop = box.current.scrollHeight); }, [c?.messages?.length, testMessages.length, busy]);
   if (!c) return <section className="ichat"><Loading /></section>;
   const send = async () => { const t = text.trim(); if (!t) return; setBusy(true); try { await api.post(`/api/chats/${id}/messages`, { text: t }); setText(''); reload(); onChange(); } catch (e) { say(e.message); } setBusy(false); };
   const simulate = async (t = cust) => {
@@ -71,6 +74,17 @@ function Thread({ id, me, say, go, onChange }) {
   };
   const aiNow = async () => { setBusy(true); try { await api.post(`/demo/chats/${id}/ai-now`); await reload(); onChange(); } catch (e) { say(e.message); } setBusy(false); };
   const waiting = c.messages.at(-1)?.sender === 'customer';
+  const askAI = async () => {
+    const message = testText.trim();
+    if (!message || busy) return;
+    setBusy(true); setTestError('');
+    try {
+      const result = await api.post(`/api/chats/${id}/ai-preview`, { text: message, history: testMessages.slice(-6) });
+      setTestMessages(previous => [...previous, { sender: 'customer', body: message }, { sender: 'ai', body: result.reply }]);
+      setTestText('');
+    } catch (error) { setTestError(error.message); }
+    finally { setBusy(false); }
+  };
 
   return (
     <section className="ichat" aria-label="Chat">
@@ -95,9 +109,20 @@ function Thread({ id, me, say, go, onChange }) {
             <span className="by">{m.sender === 'ai' ? <><Icon name="spark" />AI twin</> : m.sender === 'agent' ? 'You' : c.name.split(' ')[0]}</span>{m.body}<span className="t">{time(m.created_at)}</span>
           </div>
         ))}
+        {testMessages.length > 0 && <div className="sysmsg">Demo conversation ? visible only in this browser, not sent to WhatsApp.</div>}
+        {testMessages.map((m, index) => <div key={index} className={'bub ' + m.sender}><span className="by">{m.sender === 'ai' ? 'AI demo reply' : 'Demo customer'}</span>{m.body}</div>)}
         {busy && <div className="typing">Working <i /><i /><i /></div>}
       </div>
       <div className="composer">
+        {api.mode !== 'demo' && <div className="demosim">
+          <div className="mode"><span className="k">Demo AI:</span> customer ka message likho; AI isi chat mein reply karega.</div>
+          <div className="quick">{['Aravali Heights mein kya options hain?', 'Site visit karni hai'].map(message => <button key={message} disabled={busy} onClick={() => setTestText(message)}>{message}</button>)}<button disabled={busy} onClick={() => { setTestMessages([]); setTestError(''); }}>Clear test</button></div>
+          {testError && <p role="alert">{testError}</p>}
+          <form className="sendrow" onSubmit={event => { event.preventDefault(); askAI(); }}>
+            <input className="input" aria-label="Test customer message" placeholder="Type as the customer to test AI..." maxLength={2000} disabled={busy} value={testText} onChange={event => setTestText(event.target.value)} />
+            <button className="btn sun" disabled={busy || !testText.trim()}>{busy ? 'AI is replying...' : 'Ask AI'}</button>
+          </form>
+        </div>}
         {api.mode === 'demo' && (
           <div className="demosim">
             <div className="mode"><span className="k">Demo:</span> type as the customer on WhatsApp.</div>

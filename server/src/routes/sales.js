@@ -11,6 +11,8 @@ import * as meta from '../services/meta.js';
 import { config } from '../config.js';
 import { resolveObjection, generateHandoverBrief, generateVisitPassportData } from '../services/gemini.js';
 
+import { validatePreview, reservePreview, previewReply } from '../services/ai-preview.js';
+
 const r = Router();
 const STAGES = ['new', 'contacted', 'qualified', 'visit_scheduled', 'visit_done', 'negotiation', 'booked', 'lost'];
 
@@ -384,6 +386,17 @@ r.get('/chats/:id', allow('admin', 'sales'), h(async (req, res) => {
   const c = await chatFor(req.user, req.params.id);
   const { access_token, ...safe } = c;
   res.json({ ...safe, messages: await many(`SELECT * FROM chat_messages WHERE chat_id = $1 ORDER BY created_at`, [c.id]) });
+}));
+r.post('/chats/:id/ai-preview', allow('admin','sales'), h(async(req,res)=>{
+  const chat=await chatFor(req.user,req.params.id);
+  const input=validatePreview(req.body);
+  const release=reservePreview(req.user.org+':'+req.user.id);
+  try { res.json(await previewReply(chat,input)); }
+  catch(error) {
+    if(error.status) throw error;
+    console.warn('[ai-preview] Provider unavailable',error.name);
+    throw fail(503,'AI could not reply right now. Check the configured AI provider or try again.');
+  } finally { release(); }
 }));
 r.post('/chats/:id/messages', allow('admin', 'sales'), h(async (req, res) => {
   const c = await chatFor(req.user, req.params.id);

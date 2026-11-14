@@ -1,4 +1,4 @@
-# Nivaas — one image: builds the React app, then runs the API which also serves it.
+# Nivaas - one image: builds the React app, then runs the API which also serves it.
 FROM node:20-alpine AS client
 WORKDIR /app
 COPY shared ./shared

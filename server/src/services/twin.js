@@ -45,7 +45,7 @@ export async function inbound(num, { from, name, text, extId }) {
   await notify(num.org_id, agent.id, 'chat', `${lead.name || phone} messaged you. Your AI twin replies in ${twin.reply_after_min} min if you don't.`, `/chats/${chat.id}`);
 }
 
-async function knowledge(orgId, projectId) {
+export async function knowledge(orgId, projectId) {
   const projects = await many(`SELECT * FROM projects WHERE org_id = $1 ${projectId ? 'AND id = $2' : ''} ORDER BY created_at`, projectId ? [orgId, projectId] : [orgId]);
   const out = [];
   for (const p of projects) {

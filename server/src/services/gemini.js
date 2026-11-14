@@ -1,6 +1,6 @@
 import { config } from '../config.js';
 
-export async function callGemini({ prompt, system = '', jsonMode = false, temperature = 0.3 }) {
+export async function callGemini({ prompt, system = '', jsonMode = false, temperature = 0.3, signal }) {
   const apiKey = config.gemini.apiKey;
   if (!apiKey) throw new Error('GEMINI_API_KEY is not configured');
 
@@ -27,6 +27,7 @@ export async function callGemini({ prompt, system = '', jsonMode = false, temper
     try {
       const res = await fetch(url, {
         method: 'POST',
+        signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(bodyPayload),
       });
@@ -40,6 +41,7 @@ export async function callGemini({ prompt, system = '', jsonMode = false, temper
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
       if (text) return text.trim();
     } catch (e) {
+      if(signal?.aborted) throw e;
       lastErr = e;
     }
   }
