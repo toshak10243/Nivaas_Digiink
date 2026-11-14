@@ -1,6 +1,6 @@
 export function maskPhone(value) {
   const digits = String(value || '').replace(/\D/g, '');
-  return digits ? `••••••${digits.slice(-4)}` : '';
+  return digits ? `\u2022\u2022\u2022\u2022\u2022\u2022${digits.slice(-4)}` : '';
 }
 
 export function maskPhoneField(row, field, role) {
