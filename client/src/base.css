@@ -91,8 +91,10 @@ h1,h2,h3{font-family:var(--f-display);margin:0;letter-spacing:-.02em;text-wrap:b
 .iconbtn svg{width:18px;height:18px}
 .iconbtn .dot{position:absolute;top:7px;right:8px;width:8px;height:8px;border-radius:50%;background:var(--sun);border:2px solid var(--panel)}
 .demobadge{font-family:var(--f-mono);font-size:11px;padding:5px 10px;border-radius:99px;background:var(--sun-soft);color:var(--sun-text);white-space:nowrap}
-.content{flex:1;min-height:0;overflow:auto}
+.content{flex:1;min-height:0;overflow:auto;scroll-behavior:smooth;overscroll-behavior-y:contain;-webkit-overflow-scrolling:touch}
 .page{padding-block:28px 40px;padding-left:28px;padding-right:max(20px,env(safe-area-inset-right,0px));max-width:1240px;display:flex;flex-direction:column;gap:22px}
+
+@media (prefers-reduced-motion: reduce){.content{scroll-behavior:auto}}
 
 /* ---------- primitives ---------- */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--line-2);background:var(--panel);border-radius:var(--r-sm);padding:9px 16px;font-weight:600;font-size:14px;white-space:nowrap;transition:transform .12s, box-shadow .12s}

@@ -9,7 +9,10 @@ async function req(method, path, body) {
     headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body && !isForm ? { 'Content-Type': 'application/json' } : {}) },
     body: body ? (isForm ? body : JSON.stringify(body)) : undefined,
   });
-  if (res.status === 401 && path.startsWith('/api')) { save(null); location.hash = '#/login'; }
+  if (res.status === 401 && path.startsWith('/api')) {
+    save(null);
+    window.dispatchEvent(new Event('nivaas:session-expired'));
+  }
   if (res.status === 204) return null;
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `Error ${res.status}`);

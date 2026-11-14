@@ -3,7 +3,13 @@ import { config } from './config.js';
 
 pg.types.setTypeParser(1700, v => (v === null ? null : Number(v))); // numeric → number
 
-export const pool = new pg.Pool({ connectionString: config.databaseUrl, max: 15 });
+export const pool = new pg.Pool({
+  connectionString: config.databaseUrl,
+  max: 15,
+  connectionTimeoutMillis: 5000,
+  idleTimeoutMillis: 30000,
+  statement_timeout: 10000,
+});
 export const q = (text, params) => pool.query(text, params);
 export const one = async (text, params) => (await pool.query(text, params)).rows[0] || null;
 export const many = async (text, params) => (await pool.query(text, params)).rows;

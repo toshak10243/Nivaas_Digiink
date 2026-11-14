@@ -1,0 +1,253 @@
+import test, { before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { createServer } from 'node:net';
+import { randomBytes } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import pg from 'pg';
+import bcrypt from 'bcryptjs';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const testDatabaseUrl = process.env.TEST_DATABASE_URL;
+if (!testDatabaseUrl) throw new Error('Set TEST_DATABASE_URL to a PostgreSQL database reserved for integration tests.');
+
+let schema;
+let scopedUrl;
+let controlPool;
+let fixturePool;
+let serverProcess;
+let serverOutput = '';
+let baseUrl;
+let fixtures;
+let tokens;
+let uploadDir;
+
+function dbNameFrom(url) { return decodeURIComponent(new URL(url).pathname.replace(/^\//, '')); }
+
+async function freePort() {
+  const listener = createServer();
+  await new Promise((resolve, reject) => listener.once('error', reject).listen(0, '127.0.0.1', resolve));
+  const { port } = listener.address();
+  await new Promise(resolve => listener.close(resolve));
+  return port;
+}
+
+async function waitForServer() {
+  const deadline = Date.now() + 20_000;
+  let lastError;
+  while (Date.now() < deadline) {
+    if (serverProcess.exitCode !== null) throw new Error(`API exited before becoming ready.\n${serverOutput}`);
+    try {
+      const response = await fetch(`${baseUrl}/health/ready`);
+      if (response.ok) return;
+      lastError = new Error(`Health check returned ${response.status}`);
+    } catch (error) { lastError = error; }
+    await new Promise(resolve => setTimeout(resolve, 150));
+  }
+  throw new Error(`API did not become ready: ${lastError?.message || 'timeout'}\n${serverOutput}`);
+}
+
+async function api(route, { token, method = 'GET', body, headers = {} } = {}) {
+  const options = { method, headers: { ...headers } };
+  if (token) options.headers.Authorization = `Bearer ${token}`;
+  if (body !== undefined) {
+    if (body instanceof FormData) options.body = body;
+    else { options.headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(body); }
+  }
+  const response = await fetch(`${baseUrl}${route}`, options);
+  const data = await response.json().catch(() => null);
+  return { response, data };
+}
+
+before(async () => {
+  if (!testDatabaseUrl) return;
+  const dbName = dbNameFrom(testDatabaseUrl);
+  if (!dbName) throw new Error('TEST_DATABASE_URL must include a database name.');
+  schema = `nivaas_it_${process.pid}_${randomBytes(4).toString('hex')}`;
+  controlPool = new pg.Pool({ connectionString: testDatabaseUrl, max: 1 });
+  await controlPool.query(`CREATE SCHEMA "${schema}"`);
+
+  const scoped = new URL(testDatabaseUrl);
+  scoped.searchParams.set('options', `-c search_path=${schema},public`);
+  scopedUrl = scoped.toString();
+  process.env.DATABASE_URL = scopedUrl;
+  process.env.JWT_SECRET = 'integration-test-secret-with-32-characters';
+  process.env.META_APP_SECRET = '';
+  process.env.GEMINI_API_KEY = '';
+  process.env.NODE_ENV = 'test';
+  uploadDir = await mkdtemp(path.join(os.tmpdir(), 'nivaas-integration-'));
+
+  const { ensureDatabaseSchema } = await import('../db/setup-db.js');
+  await ensureDatabaseSchema(scopedUrl);
+  const { runMigrations } = await import('../db/migrations.js');
+  await runMigrations();
+  fixturePool = new pg.Pool({ connectionString: scopedUrl, max: 4 });
+
+  const org = (await fixturePool.query(`INSERT INTO orgs (name) VALUES ('Integration Fixtures') RETURNING id`)).rows[0];
+  const passwordHash = await bcrypt.hash('IntegrationPass123', 4);
+  const accounts = [
+    ['admin', 'admin', 'Admin'], ['salesOne', 'sales', 'Sales One'], ['salesTwo', 'sales', 'Sales Two'],
+    ['brokerOne', 'broker', 'Broker One'], ['brokerTwo', 'broker', 'Broker Two'], ['maintenance', 'maintenance', 'Maintenance'],
+    ['customerOne', 'customer', 'Customer One'], ['customerTwo', 'customer', 'Customer Two'],
+  ];
+  const users = {};
+  for (let i = 0; i < accounts.length; i += 1) {
+    const [key, role, name] = accounts[i];
+    const profile = role === 'sales'
+      ? { incentive: { type: 'percent', value: 0.25 }, availability: 'available' }
+      : role === 'broker' ? { commission: { type: 'percent', value: 2 } } : {};
+    users[key] = (await fixturePool.query(
+      `INSERT INTO users (org_id, role, name, email, password_hash, profile) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id,role,name,email`,
+      [org.id, role, name, `user${i}@integration.test`, passwordHash, JSON.stringify(profile)],
+    )).rows[0];
+  }
+
+  const project = (await fixturePool.query(
+    `INSERT INTO projects (org_id,name,city,rate_sqft,charges,payment_plan) VALUES ($1,'Test Residences','Jaipur',100,'{}','[{"milestone":"Booking","pct":100}]') RETURNING id`,
+    [org.id],
+  )).rows[0];
+  const type = (await fixturePool.query(
+    `INSERT INTO unit_types (project_id,name,bhk,carpet_sqft,builtup_sqft,super_sqft) VALUES ($1,'2 BHK',2,80,90,100) RETURNING id`,
+    [project.id],
+  )).rows[0];
+  const units = {};
+  for (const unitNo of ['T-101', 'T-102']) {
+    units[unitNo] = (await fixturePool.query(
+      `INSERT INTO units (project_id,unit_type_id,unit_no,floor) VALUES ($1,$2,$3,1) RETURNING id`,
+      [project.id, type.id, unitNo],
+    )).rows[0].id;
+  }
+  const leads = {};
+  for (const [key, user, phone] of [
+    ['salesOne', users.salesOne, '919910000001'], ['salesTwo', users.salesTwo, '919910000002'],
+    ['brokerOne', users.brokerOne, '919910000003'], ['brokerTwo', users.brokerTwo, '919910000004'],
+  ]) {
+    leads[key] = (await fixturePool.query(
+      `INSERT INTO leads (org_id,project_id,name,phone,assigned_to,broker_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+      [org.id, project.id, key, phone, user.id, user.role === 'broker' ? user.id : null],
+    )).rows[0].id;
+  }
+  const share = (await fixturePool.query(
+    `INSERT INTO share_links (org_id,created_by,project_id,unit_id) VALUES ($1,$2,$3,$4) RETURNING token`,
+    [org.id, users.admin.id, project.id, units['T-102']],
+  )).rows[0];
+  fixtures = { org, users, project, units, leads, share };
+
+  const port = await freePort();
+  baseUrl = `http://127.0.0.1:${port}`;
+  serverProcess = spawn(process.execPath, ['src/index.js'], {
+    cwd: path.resolve(here, '..'),
+    env: { ...process.env, PORT: String(port), DATABASE_URL: scopedUrl, UPLOAD_DIR: uploadDir, NODE_ENV: 'test', META_APP_SECRET: '', GEMINI_API_KEY: '' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  serverProcess.stdout.on('data', chunk => { serverOutput += chunk.toString(); });
+  serverProcess.stderr.on('data', chunk => { serverOutput += chunk.toString(); });
+  await waitForServer();
+
+  tokens = {};
+  for (const [key, user] of Object.entries(users)) {
+    if (!['admin', 'salesOne', 'salesTwo', 'brokerOne', 'brokerTwo', 'customerOne', 'customerTwo', 'maintenance'].includes(key)) continue;
+    const { response, data } = await api('/auth/login', { method: 'POST', body: { email: user.email, password: 'IntegrationPass123' } });
+    assert.equal(response.status, 200, `Login failed for ${key}: ${JSON.stringify(data)}`);
+    tokens[key] = data.token;
+  }
+});
+
+after(async () => {
+  if (serverProcess && serverProcess.exitCode === null) {
+    const exited = new Promise(resolve => serverProcess.once('exit', resolve));
+    serverProcess.kill('SIGTERM');
+    await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 5_000))]);
+    if (serverProcess.exitCode === null) serverProcess.kill();
+  }
+  await fixturePool?.end();
+  if (schema && controlPool) await controlPool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+  await controlPool?.end();
+  if (uploadDir) await rm(uploadDir, { recursive: true, force: true });
+});
+
+test('API regression flows: authorization, privacy, booking, payments, tickets, sharing, and integration failures', async t => {
+  const unauthenticated = await api('/api/me');
+  assert.equal(unauthenticated.response.status, 401);
+
+  const forbiddenProjects = await api('/api/projects', { token: tokens.customerOne });
+  assert.equal(forbiddenProjects.response.status, 403);
+  assert.equal((await api('/api/projects', { token: tokens.admin })).response.status, 200);
+
+  const salesLeads = await api('/api/leads', { token: tokens.salesOne });
+  assert.deepEqual(salesLeads.data.map(x => x.id), [fixtures.leads.salesOne]);
+  const brokerLeads = await api('/api/leads', { token: tokens.brokerOne });
+  assert.deepEqual(brokerLeads.data.map(x => x.id), [fixtures.leads.brokerOne]);
+
+  const fallbackDraft = await api(`/api/leads/${fixtures.leads.salesOne}/ai-objection`, {
+    token: tokens.salesOne, method: 'POST', body: { objection: 'What is the confirmed possession date?' },
+  });
+  assert.equal(fallbackDraft.response.status, 200);
+  assert.equal(fallbackDraft.data.isDraft, true);
+  assert.match(fallbackDraft.data.reviewNotice, /Confirm factual/);
+
+  const bookingBody = unitId => ({ unit_id: unitId, customer_name: 'Customer One', customer_email: fixtures.users.customerOne.email, customer_phone: '919920000001', booking_amount: 0 });
+  const bookingAttempts = await Promise.all([
+    api('/api/bookings', { token: tokens.salesOne, method: 'POST', body: bookingBody(fixtures.units['T-101']) }),
+    api('/api/bookings', { token: tokens.salesTwo, method: 'POST', body: bookingBody(fixtures.units['T-101']) }),
+  ]);
+  const accepted = bookingAttempts.filter(x => x.response.status === 200);
+  const conflicts = bookingAttempts.filter(x => x.response.status === 409);
+  assert.equal(accepted.length, 1, 'Exactly one concurrent booking should succeed');
+  assert.equal(conflicts.length, 1, 'The competing booking should receive a conflict');
+  const booking = accepted[0].data;
+
+  const overpayment = await api(`/api/bookings/${booking.id}/payments`, {
+    token: tokens.admin, method: 'POST', body: { amount: Number(booking.deal_value) + 1, mode: 'UPI' },
+  });
+  assert.equal(overpayment.response.status, 400);
+
+  const ownTicket = await api('/api/tickets', {
+    token: tokens.customerOne, method: 'POST',
+    body: { booking_id: booking.id, category: 'plumbing', title: 'Integration test leak', priority: 'urgent' },
+  });
+  assert.equal(ownTicket.response.status, 200, JSON.stringify(ownTicket.data));
+  const otherTicket = await api('/api/tickets', {
+    token: tokens.customerTwo, method: 'POST',
+    body: { booking_id: booking.id, category: 'plumbing', title: 'Unauthorized ticket' },
+  });
+  assert.equal(otherTicket.response.status, 404);
+
+  const internalComment = await api(`/api/tickets/${ownTicket.data.id}/comments`, {
+    token: tokens.admin, method: 'POST', body: { body: 'Internal operations note', internal: true },
+  });
+  assert.equal(internalComment.response.status, 200);
+  const customerTicket = await api(`/api/tickets/${ownTicket.data.id}`, { token: tokens.customerOne });
+  assert.equal(customerTicket.response.status, 200);
+  assert.equal(customerTicket.data.comments.some(x => x.body === 'Internal operations note'), false);
+  assert.equal((await api(`/api/tickets/${ownTicket.data.id}`, { token: tokens.customerTwo })).response.status, 404);
+
+  const badUpload = new FormData();
+  badUpload.append('files', new Blob(['<script>alert(1)</script>'], { type: 'image/png' }), 'payload.html');
+  const uploadResult = await api('/api/uploads', { token: tokens.admin, method: 'POST', body: badUpload });
+  assert.equal(uploadResult.response.status, 400);
+
+  const publicPage = await api(`/p/${fixtures.share.token}`);
+  assert.equal(publicPage.response.status, 200);
+  const publicUnit = publicPage.data.units.find(x => x.id === fixtures.units['T-102']);
+  assert.equal(publicUnit.status, 'available');
+  assert.equal(Object.hasOwn(publicUnit, 'price_override'), false);
+  assert.equal(JSON.stringify(publicPage.data).includes('access_token'), false);
+
+  for (let i = 0; i < 8; i += 1) {
+    const enquiry = await api(`/p/${fixtures.share.token}/enquire`, {
+      method: 'POST', body: { name: `Public Visitor ${i}`, phone: `9199300000${String(i).padStart(2, '0')}` },
+    });
+    assert.equal(enquiry.response.status, 200);
+  }
+  const limitedEnquiry = await api(`/p/${fixtures.share.token}/enquire`, {
+    method: 'POST', body: { name: 'Rate Limited', phone: '919930000099' },
+  });
+  assert.equal(limitedEnquiry.response.status, 429);
+
+  const invalidWebhook = await api('/webhooks/whatsapp', { method: 'POST', body: { entry: [] } });
+  assert.equal(invalidWebhook.response.status, 401);
+});

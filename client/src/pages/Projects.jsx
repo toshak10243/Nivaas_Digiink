@@ -4,61 +4,120 @@ import { Icon, Modal, Field, Seg, Switch, useLoad, Loading, Empty } from '../com
 import { money, inr, sqft, date } from '../lib/format.js';
 import ShareModal from '../components/ShareModal.jsx';
 
-export default function Projects({ say, go, params }) {
+export default function Projects({ me, say, go, params }) {
   const [list, reload] = useLoad(() => api.get('/api/projects'), []);
   const [adding, setAdding] = useState(false);
   const [share, setShare] = useState(null);
+  const [query, setQuery] = useState('');
+  const [status, setStatus] = useState('all');
+  const [location, setLocation] = useState('all');
+  const [sort, setSort] = useState('recent');
+  const [view, setView] = useState('grid');
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
-  const shareProject = async (p, e) => {
-    if (e) e.stopPropagation();
+  const shareProject = async (project, event) => {
+    event?.stopPropagation();
     try {
-      const s = await api.post('/api/share', { project_id: p.id });
-      setShare({
-        url: s.url,
-        title: p.name,
-        project: p,
-        text: `Namaste! Here are the details, photos, floor plans and prices for ${p.name}:`,
-      });
-    } catch (err) {
-      say(err.message);
-    }
+      const result = await api.post('/api/share', { project_id: project.id });
+      setShare({ url: result.url, title: project.name, project, text: `Namaste! Here are the details, photos, floor plans and prices for ${project.name}:` });
+    } catch (error) { say(error.message); }
   };
 
   if (params[0]) return <ProjectEditor id={params[0]} say={say} go={go} onShare={setShare} shareModal={share} onCloseShare={() => setShare(null)} />;
   if (!list) return <div className="page"><Loading /></div>;
-  return (
-    <div className="page">
-      <div className="pagehead"><div style={{ flex: 1 }}><h2>Projects</h2><p>Everything your team shares with buyers comes from here: photos, videos, floor plans, prices and payment plans.</p></div>
-        <button className="btn sun" onClick={() => setAdding(true)}><Icon name="plus" />New project</button></div>
-      {list.length === 0 && <Empty icon="building" title="Add your first project" />}
-      <div className="projgrid">{list.map(p => (
-        <div key={p.id} className="projcard" onClick={() => go('projects/' + p.id)} style={{ cursor: 'pointer', position: 'relative' }}>
-          <div className="pc-img">{p.cover_url ? <img src={api.media(p.cover_url)} alt="" /> : <Icon name="building" />}<span className="pc-status">{p.status.replace('_', ' ')}</span></div>
-          <div className="pc-b">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 6 }}>
-              <div><b>{p.name}</b><span className="muted" style={{ display: 'block' }}>{p.location || p.city}</span></div>
-              <button
-                type="button"
-                className="btn sm sun"
-                onClick={e => shareProject(p, e)}
-                title="Share on WhatsApp"
-                style={{ padding: '4px 8px', fontSize: 12, flexShrink: 0 }}
-              >
-                <Icon name="share" style={{ width: 14, height: 14 }} /> Share
-              </button>
-            </div>
-            <div className="pc-stats"><span><b className="num">{p.available}</b> available</span><span><b className="num">{p.sold}</b> sold</span><span><b className="num">{p.total}</b> total</span></div>
-            <div className="paybar"><i style={{ width: `${p.total ? (p.sold / p.total) * 100 : 0}%` }} /></div>
-            <span className="muted" style={{ fontSize: 13 }}>{p.bhks ? `${p.bhks} BHK · ` : ''}from {money(p.from_price)} basic</span>
-          </div>
-        </div>
-      ))}</div>
-      {adding && <NewProject say={say} onClose={() => setAdding(false)} onDone={p => { setAdding(false); reload(); go('projects/' + p.id); }} />}
-      {share && <ShareModal {...share} say={say} onClose={() => setShare(null)} />}
-    </div>
-  );
+
+  const locations = [...new Set(list.map(project => project.location || project.city).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const normalizedQuery = query.trim().toLowerCase();
+  const filtered = list.filter(project => {
+    const searchText = `${project.name || ''} ${project.location || ''} ${project.city || ''}`.toLowerCase();
+    return (!normalizedQuery || searchText.includes(normalizedQuery)) && (status === 'all' || project.status === status) && (location === 'all' || (project.location || project.city) === location);
+  }).sort((a, b) => {
+    if (sort === 'name') return a.name.localeCompare(b.name);
+    if (sort === 'available') return Number(b.available || 0) - Number(a.available || 0);
+    return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
+  });
+  const totals = list.reduce((result, project) => ({
+    projects: result.projects + 1,
+    units: result.units + Number(project.total || 0),
+    available: result.available + Number(project.available || 0),
+    sold: result.sold + Number(project.sold || 0),
+  }), { projects: 0, units: 0, available: 0, sold: 0 });
+  const canManage = me?.user?.role === 'admin';
+
+  return <div className="page projects-page">
+    <header className="projects-heading">
+      <div><h2>Projects</h2><p>Manage your developments, property details, project media and buyer-facing information from one place.</p></div>
+      {canManage && <button className="btn sun new-project-button" onClick={() => setAdding(true)}><Icon name="plus" />New Project</button>}
+    </header>
+
+    <section className="project-summary" aria-label="Project portfolio summary">
+      <ProjectMetric icon="building" label="Total Projects" value={totals.projects} tone="violet" />
+      <ProjectMetric icon="layers" label="Total Units" value={totals.units} tone="orange" />
+      <ProjectMetric icon="grid" label="Available Units" value={totals.available} tone="green" />
+      <ProjectMetric icon="checkCircle" label="Sold Units" value={totals.sold} tone="coral" />
+    </section>
+
+    <section className="projects-toolbar" aria-label="Project search and filters">
+      <label className="project-search"><Icon name="search" /><span className="sr">Search projects by name or location</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search projects by name or location..." /></label>
+      <button className="btn project-filter-toggle" aria-expanded={filtersOpen} onClick={() => setFiltersOpen(open => !open)}><Icon name="funnel" />Filters</button>
+      <div className={'project-filters' + (filtersOpen ? ' is-open' : '')}>
+        <label className="project-select"><span className="sr">Filter by project status</span><select value={status} onChange={event => setStatus(event.target.value)}><option value="all">Status: All</option><option value="pre_launch">Upcoming</option><option value="under_construction">Under Construction</option><option value="ready">Completed</option></select></label>
+        <label className="project-select"><span className="sr">Filter by project location</span><select value={location} onChange={event => setLocation(event.target.value)}><option value="all">Location: All</option>{locations.map(item => <option key={item} value={item}>{item}</option>)}</select></label>
+        <label className="project-select sort-select"><span className="sr">Sort projects</span><select value={sort} onChange={event => setSort(event.target.value)}><option value="recent">Sort by: Recently Added</option><option value="name">Sort by: Project Name</option><option value="available">Sort by: Available Units</option></select></label>
+      </div>
+      <div className="project-view-toggle" role="group" aria-label="Project display mode">
+        <button aria-pressed={view === 'grid'} aria-label="Grid view" onClick={() => setView('grid')}><Icon name="grid" /></button>
+        <button aria-pressed={view === 'list'} aria-label="List view" onClick={() => setView('list')}><Icon name="list" /></button>
+      </div>
+    </section>
+
+    {list.length === 0 ? <Empty icon="building" title="Add your first project">{canManage ? 'Create a project to begin managing units, project media, and buyer information.' : 'Your builder has not added any projects yet.'}</Empty> : filtered.length === 0 ? <Empty icon="search" title="No projects match these filters">Try another name, location, or status.</Empty> :
+      <div className={'project-cards ' + (view === 'list' ? 'list-view' : 'grid-view')}>
+        {filtered.map(project => <ProjectCard key={project.id} project={project} canManage={canManage} go={go} onShare={shareProject} />)}
+      </div>}
+
+    {adding && <NewProject say={say} onClose={() => setAdding(false)} onDone={project => { setAdding(false); reload(); go('projects/' + project.id); }} />}
+    {share && <ShareModal {...share} say={say} onClose={() => setShare(null)} />}
+  </div>;
 }
 
+function ProjectMetric({ icon, label, value, tone }) {
+  return <article className={'project-metric ' + tone}><span className="project-metric-icon"><Icon name={icon} /></span><span className="project-metric-label">{label}</span><b>{value.toLocaleString('en-IN')}</b></article>;
+}
+
+function ProjectCard({ project, canManage, go, onShare }) {
+  const statusLabels = { pre_launch: 'Upcoming', under_construction: 'Under Construction', ready: 'Completed' };
+  const total = Number(project.total || 0);
+  const available = Number(project.available || 0);
+  const sold = Number(project.sold || 0);
+  const soldPercent = total ? Math.round(sold / total * 100) : 0;
+  const neutralPercent = Math.max(0, 100 - (total ? (available + sold) / total * 100 : 0));
+  const configurations = String(project.bhks || '').split(',').map(value => value.trim()).filter(Boolean);
+  const openDetails = () => go('projects/' + project.id);
+  return <article className="project-card" role="link" tabIndex={0} onClick={openDetails} onKeyDown={event => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); openDetails(); } }} aria-label={'View ' + project.name}>
+    <div className="project-card-image">
+      {project.cover_url ? <img src={api.media(project.cover_url)} alt={project.name + ' property'} loading="lazy" /> : <div className="project-image-placeholder"><Icon name="building" /></div>}
+      <span className={'project-status-badge ' + project.status}>{project.status === 'under_construction' && <i />} {statusLabels[project.status] || project.status.replaceAll('_', ' ')}</span>
+    </div>
+    <div className="project-card-body">
+      <div className="project-card-title-row"><div><h3>{project.name}</h3><p><Icon name="pin" />{project.location || project.city || 'Location not added'}</p></div>
+        <span className="project-price">{project.from_price ? <><small>Starting from</small><b>{money(project.from_price)}</b></> : <b>Price on request</b>}</span>
+      </div>
+      <div className="project-unit-counts"><span><b>{available}</b> Available</span><span><b>{sold}</b> Sold</span><span><b>{total}</b> Total</span></div>
+      <div className="project-inventory-progress" role="img" aria-label={`${available} available, ${sold} sold, ${Math.max(0, total - available - sold)} other of ${total} units`}>
+        <i className="available" style={{ width: total ? available / total * 100 + '%' : '0%' }} /><i className="sold" style={{ width: total ? sold / total * 100 + '%' : '0%' }} /><i className="remaining" style={{ width: neutralPercent + '%' }} />
+      </div>
+      <div className="project-card-footer"><div className="project-configs">{configurations.length ? configurations.map(configuration => <span key={configuration}><Icon name="building" />{configuration} BHK</span>) : <span className="configuration-empty">Unit types not added</span>}<small>{soldPercent}% sold</small></div>
+        <div className="project-card-actions">
+          <button className="btn view-details" onClick={event => { event.stopPropagation(); openDetails(); }}><Icon name="eye" />View Details</button>
+          <button className="btn" onClick={event => { event.stopPropagation(); go('inventory/' + project.id); }}><Icon name="grid" />Manage Inventory</button>
+          <button className="btn" aria-label={'Share ' + project.name} title="Share project" onClick={event => onShare(project, event)}><Icon name="share" />Share</button>
+          {canManage && <button className="btn" title="Edit project" aria-label={'Edit ' + project.name} onClick={event => { event.stopPropagation(); openDetails(); }}><Icon name="edit" />Edit</button>}
+        </div>
+      </div>
+    </div>
+  </article>;
+}
 function NewProject({ say, onClose, onDone }) {
   const [f, setF] = useState({ name: '', city: 'Jaipur', rate_sqft: '' });
   const save = async () => { try { onDone(await api.post('/api/projects', { ...f, rate_sqft: Number(f.rate_sqft) })); say('Project created. Add unit types, then towers.'); } catch (e) { say(e.message); } };
@@ -140,7 +199,7 @@ function Overview({ p, save }) {
 
 function Pricing({ p, save }) {
   const [rate, setRate] = useState(p.rate_sqft);
-  const [c, setC] = useState({ parking: 0, club: 0, maintenance_deposit: 0, gst_pct: 5, stamp_pct: 6, registration: 0, ...p.charges });
+  const [c, setC] = useState({ parking: 0, club: 0, maintenance_deposit: 0, stamp_pct: 6, registration: 0, ...p.charges, registry_pct: Number(p.charges?.registry_pct ?? 7.5) });
   const [plan, setPlan] = useState(p.payment_plan || []);
   const total = plan.reduce((a, m) => a + Number(m.pct || 0), 0);
   const num = (k, l, hint) => <Field label={l} hint={hint} id={'pc-' + k}><input id={'pc-' + k} className="input" inputMode="decimal" value={c[k]} onChange={e => setC({ ...c, [k]: e.target.value })} /></Field>;
@@ -149,7 +208,7 @@ function Pricing({ p, save }) {
       <div className="kgrid">
         <Field label="Basic rate (₹ / sq ft on super area)" id="pc-rate"><input id="pc-rate" className="input" inputMode="numeric" value={rate} onChange={e => setRate(e.target.value)} /></Field>
         {num('parking', 'Covered parking (₹)')}{num('club', 'Club membership (₹)')}{num('maintenance_deposit', 'Maintenance deposit (₹)')}
-        {num('gst_pct', 'GST (%)', 'Under-construction residential is usually 5% (1% affordable). Confirm with your CA.')}{num('stamp_pct', 'Stamp duty (%)', 'Shown to buyers as extra')}{num('registration', 'Registration (₹)')}
+        {num('registry_pct', 'Registry (%)')}{num('stamp_pct', 'Stamp duty (%)', 'Shown to buyers as extra')}{num('registration', 'Registration charges (₹)')}
       </div>
       <div><div className="eyebrow" style={{ marginBottom: 8 }}>Payment plan · {total}% {total !== 100 && <span style={{ color: 'var(--hot)' }}>(must add up to 100%)</span>}</div>
         <div className="planrows">{plan.map((m, i) => (
@@ -159,7 +218,7 @@ function Pricing({ p, save }) {
             <button className="iconbtn" aria-label="Remove" onClick={() => setPlan(plan.filter((_, j) => j !== i))}><Icon name="trash" /></button>
           </div>))}
           <button className="btn sm" style={{ alignSelf: 'flex-start' }} onClick={() => setPlan([...plan, { milestone: '', pct: 0 }])}><Icon name="plus" />Add milestone</button></div></div>
-      <button className="btn sun" style={{ alignSelf: 'flex-start' }} disabled={total !== 100} onClick={() => save({ rate_sqft: Number(rate), charges: Object.fromEntries(Object.entries(c).map(([k, v]) => [k, Number(v)])), payment_plan: plan })}>Save pricing</button>
+      <button className="btn sun" style={{ alignSelf: 'flex-start' }} disabled={total !== 100} onClick={() => save({ rate_sqft: Number(rate), charges: Object.fromEntries(Object.entries(c).filter(([k]) => k !== 'gst_pct').map(([k, v]) => [k, Number(v)])), payment_plan: plan })}>Save pricing</button>
       <p className="hint" style={{ margin: 0 }}>Price changes apply to available units immediately. Existing bookings keep their agreed value.</p>
     </div></div>
   );

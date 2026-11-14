@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+﻿import React, { useState } from 'react';
 import { api } from '../api/index.js';
 import { Icon, Pill, Modal, Field, Seg, useLoad, Loading, Empty } from '../components/ui.jsx';
 import { time, dateTime, phone } from '../lib/format.js';
@@ -40,17 +40,17 @@ export default function Visits({ go, say }) {
     let msg = `*VIP SITE VISIT PASS*\n` +
       `Namaste *${v.name}*!\n\n` +
       `Your site visit to *${projName}* has been confirmed.\n\n` +
-      `• *Date:* ${visitDate}\n` +
-      `• *Time:* ${visitTime}\n` +
-      `• *Visitors:* ${v.visitors_count || 1} Person(s)\n`;
+      `â€¢ *Date:* ${visitDate}\n` +
+      `â€¢ *Time:* ${visitTime}\n` +
+      `â€¢ *Visitors:* ${v.visitors_count || 1} Person(s)\n`;
 
     if (v.transport === 'cab' && v.pickup_address) {
-      msg += `• *Transport:* Cab pickup requested at: ${v.pickup_address}\n`;
+      msg += `â€¢ *Transport:* Cab pickup requested at: ${v.pickup_address}\n`;
     }
 
-    msg += `• *Site Address:* ${loc}\n` +
-      `• *Google Maps Navigation:* ${mapUrl}\n` +
-      `• *Host / Relationship Manager:* ${v.agent || 'Our Site Manager'}\n\n` +
+    msg += `â€¢ *Site Address:* ${loc}\n` +
+      `â€¢ *Google Maps Navigation:* ${mapUrl}\n` +
+      `â€¢ *Host / Relationship Manager:* ${v.agent || 'Our Site Manager'}\n\n` +
       `We look forward to welcoming you!`;
 
     const clientPhone = String(v.phone || '').replace(/\D/g, '');
@@ -154,7 +154,7 @@ export default function Visits({ go, say }) {
                     </div>
 
                     <div className="muted" style={{ fontSize: 13, marginBottom: 4 }}>
-                      <span>{v.config_pref || 'Requirement open'}</span> · <b>{v.project_name}</b> · Advisor: <b>{v.agent || 'Unassigned'}</b>
+                      <span>{v.config_pref || 'Requirement open'}</span> Â· <b>{v.project_name}</b> Â· Advisor: <b>{v.agent || 'Unassigned'}</b>
                     </div>
 
                     <div className="mono muted" style={{ fontSize: 12 }}>
@@ -163,7 +163,7 @@ export default function Visits({ go, say }) {
 
                     {v.rating && (
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 13 }}>
-                        <span style={{ color: '#f59e0b' }}>{'★'.repeat(v.rating)}{'☆'.repeat(5 - v.rating)}</span>
+                        <span style={{ color: '#f59e0b' }}>{'â˜…'.repeat(v.rating)}{'â˜†'.repeat(5 - v.rating)}</span>
                         <b style={{ color: 'var(--ink-2)' }}>({v.rating}/5)</b>
                         {v.interested_unit && <span className="visit-badge">Interested: {v.interested_unit}</span>}
                       </div>
@@ -171,7 +171,7 @@ export default function Visits({ go, say }) {
 
                     {v.feedback && (
                       <div className="muted" style={{ fontSize: 12.5, fontStyle: 'italic', marginTop: 4, background: 'var(--panel-2)', padding: '4px 8px', borderRadius: 4 }}>
-                        “{v.feedback}”
+                        â€œ{v.feedback}â€
                       </div>
                     )}
                   </div>
@@ -189,7 +189,7 @@ export default function Visits({ go, say }) {
 
                     {v.status === 'done' && (
                       <button className="btn sm" style={{ border: '1px solid #059669', color: '#059669' }} onClick={() => setPassportModal(v)}>
-                        <Icon name="shield" />Evidence Passport
+                        <Icon name="shield" />Site Visit Notes
                       </button>
                     )}
 
@@ -322,7 +322,7 @@ function BookVisitModal({ onClose, say, onDone }) {
         <>
           <button className="btn ghost" onClick={onClose}>Cancel</button>
           <button className="btn sun" disabled={busy} onClick={submit}>
-            {busy ? 'Booking…' : 'Schedule Visit'}
+            {busy ? 'Bookingâ€¦' : 'Schedule Visit'}
           </button>
         </>
       }
@@ -332,7 +332,7 @@ function BookVisitModal({ onClose, say, onDone }) {
           <select id="bv-lead" className="select" value={leadId} onChange={e => onSelectLead(e.target.value)}>
             <option value="">Select Existing Lead...</option>
             {(leads || []).filter(l => !['booked', 'lost'].includes(l.stage)).map(l => (
-              <option key={l.id} value={l.id}>{l.name} ({l.phone}) · {l.stage}</option>
+              <option key={l.id} value={l.id}>{l.name} ({l.phone}) Â· {l.stage}</option>
             ))}
           </select>
         </Field>
@@ -379,7 +379,7 @@ function BookVisitModal({ onClose, say, onDone }) {
             </label>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
               <input type="radio" name="trans" checked={transport === 'cab'} onChange={() => setTransport('cab')} />
-              <span>Builder Cab / Chauffeur Required 🚖</span>
+              <span>Builder Cab / Chauffeur Required ðŸš–</span>
             </label>
           </div>
 
@@ -452,7 +452,7 @@ function CompleteVisitModal({ visit, onClose, say, onDone }) {
         <>
           <button className="btn ghost" onClick={onClose}>Cancel</button>
           <button className="btn sun" disabled={busy} onClick={submit}>
-            {busy ? 'Saving…' : 'Complete Visit'}
+            {busy ? 'Savingâ€¦' : 'Complete Visit'}
           </button>
         </>
       }
@@ -467,7 +467,7 @@ function CompleteVisitModal({ visit, onClose, say, onDone }) {
               onClick={() => setRating(star)}
               title={`${star} star`}
             >
-              ★
+              â˜…
             </span>
           ))}
           <span style={{ fontSize: 13, color: 'var(--ink-2)', alignSelf: 'center', marginLeft: 8 }}>
@@ -550,7 +550,7 @@ function RescheduleVisitModal({ visit, onClose, say, onDone }) {
         <>
           <button className="btn ghost" onClick={onClose}>Cancel</button>
           <button className="btn sun" disabled={busy} onClick={submit}>
-            {busy ? 'Saving…' : 'Confirm Reschedule'}
+            {busy ? 'Savingâ€¦' : 'Confirm Reschedule'}
           </button>
         </>
       }
@@ -583,7 +583,7 @@ function VisitPassportModal({ visit, onClose, say, onDone }) {
         questions: questions
       });
       setPassport(res.passport || res);
-      say('Digital Evidence Passport Generated!');
+      say('Site visit notes saved');
       if (typeof onDone === 'function') onDone();
     } catch (e) {
       say(e.message);
@@ -592,35 +592,35 @@ function VisitPassportModal({ visit, onClose, say, onDone }) {
   };
 
   const copyText = () => {
-    const text = `VERIFIED SITE VISIT EVIDENCE PASSPORT\n` +
+    const text = `SITE VISIT NOTES (CRM RECORD)\n` +
       `Client: ${visit.name} (${visit.phone})\n` +
       `Project: ${visit.project_name || 'Project Site'}\n` +
       `Date & Time: ${new Date(visit.scheduled_at).toLocaleString('en-IN')}\n` +
-      `Flats Inspected: ${flatsShown || 'Project Tour'}\n` +
-      `Price Sheet / Quote: ${priceQuoted || 'Official Rate Sheet'}\n` +
-      `Agreed Commitments: ${commitments || 'Standard Terms'}\n` +
-      `Questions / Notes: ${questions || '—'}\n` +
-      `Security Hash: VP-${visit.id.slice(-6).toUpperCase()}`;
+      `Flats / units recorded: ${flatsShown || 'Not recorded'}\n` +
+      `Price / quote recorded: ${priceQuoted || 'Not recorded'}\n` +
+      `Commitments discussed: ${commitments || 'Not recorded'}\n` +
+      `Questions / notes: ${questions || 'Not recorded'}\n` +
+      `CRM record ID: ${visit.id}`;
     navigator.clipboard?.writeText(text);
-    say('Passport text copied to clipboard!');
+    say('Visit notes copied to clipboard');
   };
 
   const shareBuyerWhatsApp = () => {
-    const text = `*VERIFIED SITE VISIT EVIDENCE PASSPORT*\n` +
+    const text = `*SITE VISIT NOTES (CRM RECORD)*\n` +
       `Namaste *${visit.name}*!\n\n` +
       `Thank you for visiting *${visit.project_name || 'our project'}* today.\n\n` +
-      `• *Flats Inspected:* ${flatsShown || 'Project Tour'}\n` +
-      `• *Quotation:* ${priceQuoted || 'Standard Price Sheet'}\n` +
-      `• *Approved Commitments:* ${commitments || 'Standard Terms'}\n` +
-      `• *Digital Verification:* VP-${visit.id.slice(-6).toUpperCase()}\n\n` +
-      `This verified summary is securely saved with developer management so there is no ambiguity on pricing or promises.`;
+      `â€¢ *Flats / units recorded:* ${flatsShown || 'Not recorded'}\n` +
+      `â€¢ *Price / quote recorded:* ${priceQuoted || 'Not recorded'}\n` +
+      `â€¢ *Commitments discussed:* ${commitments || 'Not recorded'}\n` +
+      `â€¢ *CRM record ID:* ${visit.id}\n\n` +
+      `These CRM-entered notes do not independently verify prices, commitments, approvals, or availability. Confirm them with the responsible project representative.`;
     const ph = String(visit.phone || '').replace(/\D/g, '');
     window.open(`https://wa.me/${ph}?text=${encodeURIComponent(text)}`, '_blank');
   };
 
   return (
     <Modal
-      title="Site Visit Evidence Passport"
+      title="Site Visit Notes"
       onClose={onClose}
       wide
       footer={
@@ -629,7 +629,7 @@ function VisitPassportModal({ visit, onClose, say, onDone }) {
           <button className="btn ghost" onClick={copyText}><Icon name="copy" />Copy Record</button>
           <button className="btn wa-btn" onClick={shareBuyerWhatsApp}><Icon name="wa" />Share with Buyer</button>
           <button className="btn sun" disabled={busy} onClick={generate}>
-            {busy ? 'Verifying…' : passport ? 'Update Passport' : 'Generate Passport'}
+            {busy ? 'Saving…' : passport ? 'Update Notes' : 'Save Notes'}
           </button>
         </>
       }
@@ -638,15 +638,15 @@ function VisitPassportModal({ visit, onClose, say, onDone }) {
         <div className="passport-header">
           <div>
             <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.08em', color: '#64748b', textTransform: 'uppercase' }}>
-              NIVAAS VERIFIED REAL ESTATE EVIDENCE
+              NIVAAS SITE VISIT NOTES
             </span>
-            <h2 style={{ fontSize: 18, margin: '2px 0 0', color: '#0f172a' }}>Site Visit Evidence Passport</h2>
+            <h2 style={{ fontSize: 18, margin: '2px 0 0', color: '#0f172a' }}>Site Visit Notes</h2>
             <div style={{ fontSize: 12, color: '#475569' }}>
-              Client: <b>{visit.name}</b> · {visit.phone} · Host: <b>{visit.agent || 'Site RM'}</b>
+              Client: <b>{visit.name}</b> Â· {visit.phone} Â· Host: <b>{visit.agent || 'Site RM'}</b>
             </div>
           </div>
           <div className="passport-seal">
-            VERIFIED DIGITAL RECORD
+            CRM RECORD
           </div>
         </div>
 
@@ -666,9 +666,9 @@ function VisitPassportModal({ visit, onClose, say, onDone }) {
             <input id="vp-flats" className="input" placeholder="e.g. Flat 402 Tower A (3 BHK) and Sample Flat 101" value={flatsShown} onChange={e => setFlatsShown(e.target.value)} />
           </Field>
           <Field label="Cost Sheet & Commercials Quoted" id="vp-price">
-            <input id="vp-price" className="input" placeholder="e.g. ₹98.5 Lakhs all-inclusive with 1 covered parking" value={priceQuoted} onChange={e => setPriceQuoted(e.target.value)} />
+            <input id="vp-price" className="input" placeholder="e.g. â‚¹98.5 Lakhs all-inclusive with 1 covered parking" value={priceQuoted} onChange={e => setPriceQuoted(e.target.value)} />
           </Field>
-          <Field label="Special Commitments / Offers Approved" id="vp-comm">
+          <Field label="Commitments Discussed (CRM Record)" id="vp-comm">
             <input id="vp-comm" className="input" placeholder="e.g. Free modular kitchen voucher if booked before Sunday, 10:90 scheme" value={commitments} onChange={e => setCommitments(e.target.value)} />
           </Field>
           <Field label="Buyer Questions & Discussion Points" id="vp-q">
@@ -677,7 +677,7 @@ function VisitPassportModal({ visit, onClose, say, onDone }) {
         </div>
 
         <div style={{ marginTop: 14, padding: '10px 14px', background: '#f1f5f9', borderRadius: 8, fontSize: 11.5, color: '#475569' }}>
-          <b>Tamper-proof Verification:</b> This passport binds the sales commitments, quoted rate, and unit details into an immutable digital record shared between Buyer, Broker, and Builder.
+          <b>Record note:</b> These details are entered by the team and may be updated. Confirm quoted terms and commitments with the responsible project representative.
         </div>
       </div>
     </Modal>

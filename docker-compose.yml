@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: nivaas
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-nivaas}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in the root .env file}
       POSTGRES_DB: nivaas
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck:
@@ -18,10 +18,16 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgres://nivaas:${DB_PASSWORD:-nivaas}@db:5432/nivaas
+      DATABASE_URL: postgres://nivaas:${DB_PASSWORD:?Set DB_PASSWORD in the root .env file}@db:5432/nivaas
       UPLOAD_DIR: /data/uploads
     volumes: [uploads:/data/uploads]
     ports: ["127.0.0.1:4100:4100"]     # only nginx on the same VPS can reach it
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4100/health/ready').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
       db: { condition: service_healthy }
 

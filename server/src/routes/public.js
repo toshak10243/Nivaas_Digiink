@@ -7,6 +7,7 @@ import { settingsOf } from '../settings.js';
 import { notify, logLead } from '../services/notify.js';
 import { assignLead } from '../services/routing.js';
 import { normPhone } from '../services/meta.js';
+import { rateLimit } from '../lib/rate-limit.js';
 
 const r = Router();
 
@@ -41,7 +42,7 @@ r.get('/p/:token', h(async (req, res) => {
   });
 }));
 
-r.post('/p/:token/enquire', h(async (req, res) => {
+r.post('/p/:token/enquire', rateLimit({ windowMs: 10 * 60_000, limit: 8, key: req => `enquire:${req.ip}:${req.params.token}`, message: 'Too many enquiries from this connection. Try again in a few minutes.' }), h(async (req, res) => {
   const link = await one(`SELECT s.*, u.role FROM share_links s JOIN users u ON u.id = s.created_by WHERE s.token = $1`, [req.params.token]);
   if (!link) throw fail(404, 'This link has expired');
   const { name, phone, message, unit_no, visit } = req.body || {};

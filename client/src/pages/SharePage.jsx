@@ -107,7 +107,7 @@ function Share({ d, token, say }) {
 }
 
 function CostCard({ cost, unit, type }) {
-  const rows = [[`Basic price (${sqft(cost.sqft)} × ${inr(cost.rate)})`, cost.base], ...(cost.plc ? [['Premium location charge', cost.plc]] : []), ['Covered parking', cost.parking], ['Club membership', cost.club], [`GST (${cost.gst_pct}%)`, cost.gst], ['Maintenance deposit', cost.deposit]];
+  const rows = [[`Basic price (${sqft(cost.sqft)} × ${inr(cost.rate)})`, cost.base], ...(cost.plc ? [['Premium location charge', cost.plc]] : []), ['Covered parking', cost.parking], ['Club membership', cost.club], [`Registry (${cost.registry_pct}%)`, cost.registry], ['Maintenance deposit', cost.deposit]];
   return (
     <div className="sp-card">
       <span className="eyebrow">{unit ? `Flat ${unit.unit_no}` : `${type?.name}, starting`}</span>

@@ -51,18 +51,22 @@ export async function knowledge(orgId, projectId) {
   for (const p of projects) {
     const types = await many(`SELECT * FROM unit_types WHERE project_id = $1 ORDER BY bhk`, [p.id]);
     const avail = await many(`SELECT u.*, t.name AS type_name FROM units u LEFT JOIN unit_types t ON t.id = u.unit_type_id WHERE u.project_id = $1 AND u.status = 'available' ORDER BY u.floor, u.unit_no`, [p.id]);
+    const mediaTypes = await many(`SELECT t.bhk, t.name, bool_or(m.kind = 'image') AS has_photos, bool_or(m.kind = 'floorplan') AS has_layout
+      FROM unit_types t JOIN media m ON m.unit_type_id = t.id AND m.kind IN ('image','floorplan')
+      WHERE t.project_id = $1 GROUP BY t.id ORDER BY t.bhk`, [p.id]);
     out.push(`PROJECT: ${p.name} — ${p.tagline || ''}
 Location: ${p.location}, ${p.city}. RERA: ${p.rera_no || 'n/a'}. Status: ${p.status.replace('_', ' ')}. Possession: ${p.possession || 'n/a'}.
 ${p.description || ''}
 Amenities: ${p.amenities.join(', ')}
 Payment plan: ${(p.payment_plan || []).map(x => `${x.milestone} ${x.pct}%`).join(' · ')}
-Configurations (price = all-inclusive of PLC/parking/club/GST, excluding stamp duty & registration):
+Configurations (price = all-inclusive of PLC/parking/club/registry, excluding stamp duty & registration):
 ${types.map(t => {
   const sample = avail.find(u => u.unit_type_id === t.id);
   const cs = costSheet(p, t, sample || {});
   const n = avail.filter(u => u.unit_type_id === t.id).length;
   return `- ${t.name}: carpet ${t.carpet_sqft} sq ft, built-up ${t.builtup_sqft}, super ${t.super_sqft}. From ${inr(cs.total)}. ${n} available.`;
 }).join('\n')}
+Photos and layouts available by configuration: ${mediaTypes.map(t => `${t.bhk} BHK (${t.name}): ${[t.has_photos && 'photos', t.has_layout && 'floor plan'].filter(Boolean).join(' and ')}`).join('; ') || 'no flat photos or floor plans uploaded'}.
 Available units right now: ${avail.slice(0, 40).map(u => `${u.unit_no} (${u.type_name}, floor ${u.floor}${u.facing ? ', ' + u.facing : ''})`).join('; ') || 'none'}`);
   }
   return out.join('\n\n');
@@ -92,12 +96,13 @@ RULES
 - Quote only the prices above. Never offer a discount; say ${agent ? agent.name.split(' ')[0] : 'the team'} will discuss final pricing at the visit.
 - Specific unit asked (e.g. "302-F") → say if it is available right now from the list; if not, suggest the closest available ones.
 - When they agree to a day and time for a site visit, confirm it and put it in visit_at (ISO 8601, Asia/Kolkata, today is ${new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })}).
+- If the customer asks for flat photos or a floor plan/layout, set photo_bhk to the requested 2, 3, or 4. If they do not specify a configuration, use their known preference only when clear; otherwise ask which BHK they want and leave photo_bhk empty. Only request media for configurations listed above.
 - Loan, legal, possession-delay or complaint questions → say the person will call back, set need_human.
 Existing visits: ${JSON.stringify(visits)}
 Lead so far: ${JSON.stringify({ name: lead.name, budget: lead.budget, config_pref: lead.config_pref, purpose: lead.purpose, timeline: lead.timeline })}
 
 Return ONLY JSON:
-{"reply":"", "lead":{"name":"","email":"","budget":"","config_pref":"","purpose":"","timeline":""}, "unit_no":"", "visit_at":"", "temperature":"hot|warm|cold", "summary":"2 short English sentences for the agent", "need_human":""}`;
+{"reply":"", "lead":{"name":"","email":"","budget":"","config_pref":"","purpose":"","timeline":""}, "unit_no":"", "visit_at":"", "photo_bhk":"", "temperature":"hot|warm|cold", "summary":"2 short English sentences for the agent", "need_human":""}`;
 
   const messages = [];
   for (const m of history) {
@@ -121,6 +126,32 @@ Return ONLY JSON:
     try { await meta.sendText(chat, meta.normPhone(lead.phone), out.reply); }
     catch (e) { await q(`INSERT INTO chat_messages (chat_id, sender, body) VALUES ($1,'system',$2)`, [chat.id, 'Send failed: ' + e.message]); }
     await q(`INSERT INTO chat_messages (chat_id, sender, body) VALUES ($1,'ai',$2)`, [chat.id, out.reply]);
+  }
+  const lastCustomerMessage = [...history].reverse().find(m => m.sender === 'customer')?.body || '';
+  const photoAsk = /\b(photo|photos|picture|pictures|image|images|pic|pics|interior|sample\s*flat)\b|फोटो|तस्वीर/i.test(lastCustomerMessage);
+  const layoutAsk = /\b(layout|floor\s*plan|floorplan|blueprint)\b|नक्शा|naksha/i.test(lastCustomerMessage);
+  const mediaAsk = photoAsk || layoutAsk;
+  const mediaBhk = mediaAsk ? Number(String(out.photo_bhk || '').match(/[234]/)?.[0] || String(lead.config_pref || '').match(/[234]/)?.[0]) : 0;
+  if (mediaBhk) {
+    const requestedKinds = layoutAsk && photoAsk ? ['image', 'floorplan'] : [layoutAsk ? 'floorplan' : 'image'];
+    const mediaToSend = [];
+    for (const kind of requestedKinds) {
+      const rows = await many(`SELECT DISTINCT ON (m.url) m.url, m.title, m.kind, t.name AS type_name
+        FROM media m JOIN unit_types t ON t.id = m.unit_type_id
+        WHERE m.project_id = $1 AND t.bhk = $2 AND m.kind = $3
+        ORDER BY m.url, m.sort, m.created_at LIMIT $4`, [lead.project_id, mediaBhk, kind, requestedKinds.length > 1 ? 1 : 2]);
+      mediaToSend.push(...rows);
+    }
+    for (const photo of mediaToSend) {
+      try {
+        const caption = photo.kind === 'floorplan' ? `${photo.type_name} floor plan` : `${photo.type_name} sample flat`;
+        await meta.sendImage(chat, meta.normPhone(lead.phone), photo.url, caption);
+        await q(`INSERT INTO chat_messages (chat_id, sender, body) VALUES ($1,'ai',$2)`, [chat.id, `[${photo.kind === 'floorplan' ? 'Floor plan' : 'Photo'} sent: ${photo.title || photo.type_name}]`]);
+      } catch (e) {
+        await q(`INSERT INTO chat_messages (chat_id, sender, body) VALUES ($1,'system',$2)`, [chat.id, 'Photo send failed: ' + e.message]);
+        await notify(chat.org_id, agent?.id || null, 'chat', `Could not send ${photo.type_name} photos to ${lead.name || lead.phone}: ${e.message}`, `/chats/${chat.id}`);
+      }
+    }
   }
   await q(`UPDATE chats SET pending_ai_at = NULL WHERE id = $1`, [chat.id]);
   await apply(lead, out, agent, chat);

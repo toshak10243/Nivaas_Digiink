@@ -7,9 +7,11 @@
   "scripts": {
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
-    "test:checkboxes": "node checkbox-integration.mjs",
     "db:init": "node db/init.js",
-    "db:seed": "node db/seed.js"
+    "db:seed": "node db/seed.js",
+    "test": "node --test test/unit/core.test.js",
+    "test:integration": "node test/run-integration.js",
+    "check:syntax": "node test/check-syntax.js"
   },
   "engines": { "node": ">=20" },
   "dependencies": {

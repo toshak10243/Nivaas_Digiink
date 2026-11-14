@@ -23,257 +23,92 @@ export default function Dashboard({ me, go, say }) {
 /* ==========================================================================
    1. BUILDER ADMIN DASHBOARD
    ========================================================================== */
-function Admin({ d, me, go, say }) {
-  const inv = Object.fromEntries(d.inventory.map(x => [x.status, x.n]));
-  const total = Object.values(inv).reduce((a, b) => a + b, 0);
-  const pipe = Object.fromEntries(d.pipeline.map(x => [x.stage, x.n]));
-  const maxTrend = Math.max(1, ...d.trend.map(t => t.value));
-  const openLeads = Object.entries(pipe).filter(([k]) => !['booked', 'lost'].includes(k)).reduce((a, [, n]) => a + n, 0);
-  const monthName = new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
-
-  return (
-    <div className="page">
-      {/* Executive Hero Banner */}
-      <section className="dash-hero">
-        <div className="dash-hero-top">
-          <span className="dash-hero-tag">
-            <Icon name="building" style={{ width: 14, height: 14 }} />
-            {me?.org?.name || 'Real Estate Enterprise'} · {monthName}
-          </span>
-          <span className="dash-hero-stat-pill">
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981', display: 'inline-block' }} />
-            Live Real Estate Operations
-          </span>
-        </div>
-
-        <div className="dash-hero-main">
-          <h2 className="dash-hero-title">
-            {money(d.sales.value)} Booked, <em>{d.sales.units} Homes</em> Sold This Month
-          </h2>
-          <div className="dash-hero-sub">
-            <span className="dash-hero-stat-pill">
-              Collections: <b>{money(d.collected)}</b>
-            </span>
-            <span className="dash-hero-stat-pill">
-              Available Units: <b>{inv.available || 0} / {total}</b>
-            </span>
-            <span className="dash-hero-stat-pill">
-              Site Visits Scheduled: <b>{d.visits.length}</b>
-            </span>
-          </div>
-        </div>
-
-        <div className="dash-hero-actions">
-          <button className="btn sun" onClick={() => go('inventory')}>
-            <Icon name="grid" />Live Inventory &amp; Cost Sheets
-          </button>
-          <button className="btn" onClick={() => go('leads')}>
-            <Icon name="funnel" />Lead Pipeline &amp; Copilot
-          </button>
-          <button className="btn" onClick={() => go('portal')}>
-            <Icon name="shield" />Buyer Handover &amp; Progress
-          </button>
-          <button className="btn" onClick={() => go('bookings')}>
-            <Icon name="receipt" />Registry Day Manager
-          </button>
-        </div>
-      </section>
-
-      {/* KPI Cards Grid */}
-      <section className="dash-kpis-grid">
-        <div className="dash-kpi-card">
-          <div className="dash-kpi-card-h">
-            <span className="dash-kpi-label">Gross Sales Booked</span>
-            <div className="dash-kpi-icon emerald"><Icon name="rupee" /></div>
-          </div>
-          <div className="dash-kpi-val">{money(d.sales.value)}</div>
-          <div className="dash-kpi-sub">
-            <span className="dash-kpi-tag ok">{d.sales.units} units</span> this calendar month
-          </div>
-        </div>
-
-        <div className="dash-kpi-card">
-          <div className="dash-kpi-card-h">
-            <span className="dash-kpi-label">Collections Deposited</span>
-            <div className="dash-kpi-icon blue"><Icon name="checkCircle" /></div>
-          </div>
-          <div className="dash-kpi-val">{money(d.collected)}</div>
-          <div className="dash-kpi-sub">
-            Milestone payments received in escrow
-          </div>
-        </div>
-
-        <div className="dash-kpi-card">
-          <div className="dash-kpi-card-h">
-            <span className="dash-kpi-label">Available Inventory</span>
-            <div className="dash-kpi-icon amber"><Icon name="grid" /></div>
-          </div>
-          <div className="dash-kpi-val">{inv.available || 0} <small style={{ fontSize: 16, color: 'var(--ink-3)' }}>/ {total}</small></div>
-          <div className="dash-kpi-sub">
-            <b>{inv.hold || 0}</b> on hold · <b>{inv.booked || 0}</b> booked
-          </div>
-        </div>
-
-        <div className="dash-kpi-card">
-          <div className="dash-kpi-card-h">
-            <span className="dash-kpi-label">Open Complaints</span>
-            <div className="dash-kpi-icon rose"><Icon name="wrench" /></div>
-          </div>
-          <div className="dash-kpi-val">{d.tickets.open}</div>
-          <div className="dash-kpi-sub">
-            {d.tickets.late > 0 ? (
-              <span className="dash-kpi-tag warn">{d.tickets.late} past 24h SLA</span>
-            ) : (
-              <span className="dash-kpi-tag ok">All within 24h SLA</span>
-            )}
-          </div>
-        </div>
-      </section>
-
-      {/* Section 2: Inventory Status & Pipeline Matrix */}
-      <section className="grid2">
-        <div className="card">
-          <div className="card-h">
-            <h3>Inventory Absorption &amp; 6-Month Trend</h3>
-            <span className="muted">{total} units across all projects</span>
-          </div>
-          <div className="card-b">
-            <div className="stackbar" role="img" aria-label="Inventory by status">
-              {INV.map(([k, , c]) => inv[k] ? <i key={k} style={{ flex: inv[k], background: c }} title={`${k}: ${inv[k]}`} /> : null)}
-            </div>
-            <div className="legend" style={{ marginTop: 14 }}>
-              {INV.map(([k, l, c]) => (
-                <span key={k} className="chip">
-                  <i style={{ background: c }} />{l} · <b className="num">{inv[k] || 0}</b>
-                </span>
-              ))}
-            </div>
-            <div className="eyebrow" style={{ margin: '22px 0 10px' }}>Gross Sales Value, Last 6 Months</div>
-            <div className="trend">
-              {d.trend.map(t => (
-                <div key={t.month} className="tcol">
-                  <span className="tval num">{t.value ? money(t.value) : '₹0'}</span>
-                  <i style={{ height: `${Math.max(4, (t.value / maxTrend) * 100)}%` }} />
-                  <span className="tlab">{new Date(t.month + '-01').toLocaleDateString('en-IN', { month: 'short' })}</span>
-                  <span className="tunits">{t.units} units</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <div className="card">
-          <div className="card-h">
-            <h3>Lead Pipeline &amp; Conversion</h3>
-            <span className="muted">{openLeads} active prospective buyers</span>
-          </div>
-          <div className="card-b funnel">
-            {STAGES.filter(([k]) => k !== 'lost').map(([k, l]) => {
-              const max = Math.max(1, ...Object.values(pipe));
-              const count = pipe[k] || 0;
-              return (
-                <button key={k} className="fstep fbtn" onClick={() => go('leads')}>
-                  <span>{l}</span>
-                  <b className="num">{count}</b>
-                  <div className="fbar">
-                    <i style={{ width: `${Math.max(3, (count / max) * 100)}%` }} />
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </section>
-
-      {/* Section 3: Operations & Team Grid */}
-      <section className="grid2">
-        <div className="card">
-          <div className="card-h">
-            <h3>Top Producers This Month</h3>
-            <span className="muted">Sales team &amp; Channel partners</span>
-          </div>
-          <div className="list">
-            {d.leaderboard.length === 0 ? (
-              <Empty icon="users" title="No bookings recorded yet this month" />
-            ) : (
-              d.leaderboard.map((p, i) => (
-                <div key={p.id} className="lrow" style={{ alignItems: 'center' }}>
-                  <span className="rank">{i + 1}</span>
-                  <Avatar name={p.name} size="sm" />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <b>{p.name}</b>
-                    <span className="muted"> · {p.role === 'broker' ? 'Channel Partner' : 'Sales Executive'}</span>
-                  </div>
-                  <span className="pill" style={{ marginRight: 8 }}>{p.units} {p.units === 1 ? 'unit' : 'units'}</span>
-                  <b className="num" style={{ minWidth: 80, textAlign: 'right' }}>{money(p.value)}</b>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-
-        <div className="card">
-          <div className="card-h">
-            <h3>Upcoming Site Visits</h3>
-            <span className="muted">{d.visits.length} scheduled</span>
-          </div>
-          <div className="list">
-            {d.visits.length === 0 ? (
-              <Empty icon="calendar" title="No visits booked in next 7 days" />
-            ) : (
-              d.visits.map(v => (
-                <button key={v.id} className="lrow btnrow" onClick={() => go('leads/' + v.lead_id)}>
-                  <span className="when">{dateTime(v.scheduled_at)}</span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <b>{v.name}</b>
-                    <span className="muted"> · Advisor: {v.agent || 'Unassigned'}</span>
-                    {v.transport === 'cab' && (
-                      <span className="visit-badge" style={{ marginLeft: 6, color: '#b45309', background: '#fef3c7' }}>
-                        Cab Booked
-                      </span>
-                    )}
-                  </div>
-                  <Icon name="arrow" style={{ width: 16, height: 16, color: 'var(--ink-3)' }} />
-                </button>
-              ))
-            )}
-          </div>
-        </div>
-      </section>
-
-      {/* Section 4: Today's Team Follow-up Agenda */}
-      {d.followups && d.followups.length > 0 && (
-        <div className="card" style={{ marginTop: 20 }}>
-          <div className="card-h">
-            <h3>Pending &amp; Today's Follow-up Agenda</h3>
-            <span className="muted">{d.followups.length} scheduled client touches</span>
-          </div>
-          <div className="list">
-            {d.followups.map(f => (
-              <div key={f.id} className="lrow" style={{ alignItems: 'center' }}>
-                <span className="when">{dateTime(f.followup_at)}</span>
-                <button className="linkbtn" style={{ flex: 1, minWidth: 0, textAlign: 'left' }} onClick={() => go('leads/' + f.id)}>
-                  <b>{f.name}</b>
-                  <span className="muted"> · {phone(f.phone)} · Advisor: <b>{f.agent || 'Unassigned'}</b></span>
-                  {f.followup_note && <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>“{f.followup_note}”</div>}
-                </button>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span className="pill warm" style={{ textTransform: 'capitalize' }}>{f.followup_type || 'Call'}</span>
-                  <a className="btn sm sun" href={`tel:+${String(f.phone).replace(/\D/g, '')}`} title="Call"><Icon name="phone" />Call</a>
-                  <a className="btn sm wa-btn" href={`https://wa.me/${String(f.phone).replace(/\D/g, '')}?text=${encodeURIComponent(`Namaste ${f.name?.split(' ')[0] || ''}! Following up as discussed regarding our property.`)}`} target="_blank" rel="noreferrer"><Icon name="wa" />WhatsApp</a>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
+function Kpi({ icon, tone, label, value, detail, progress }) {
+  return <article className={'admin-kpi ' + tone}>
+    <div className="admin-kpi-top"><span className="admin-kpi-icon"><Icon name={icon} /></span><span>{label}</span></div>
+    <strong className="admin-kpi-value">{value}</strong>
+    <div className="admin-kpi-detail">{detail}</div>
+    {progress !== undefined && <div className="admin-kpi-progress"><i style={{ width: progress + '%' }} /></div>}
+  </article>;
 }
 
-/* ==========================================================================
-   2. SALES AGENT DASHBOARD
-   ========================================================================== */
+function Admin({ d, me, go }) {
+  const inv = Object.fromEntries(d.inventory.map(x => [x.status, x.n]));
+  const total = Object.values(inv).reduce((a, b) => a + b, 0);
+  const pipe = Object.fromEntries(d.pipeline.map(x => [x.stage, Number(x.n || 0)]));
+  const maxTrend = Math.max(1, ...d.trend.map(t => Number(t.value || 0)));
+  const pipelineTotal = Math.max(1, Object.values(pipe).reduce((sum, value) => sum + value, 0));
+  const monthName = new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+  const now = Date.now();
+  const upcomingVisits = d.visits.filter(v => new Date(v.scheduled_at).getTime() >= now && new Date(v.scheduled_at).getTime() <= now + 7 * 86400000);
+  const stageRows = [
+    ['new', 'New', pipe.new || 0], ['contacted', 'Contacted', pipe.contacted || 0], ['qualified', 'Qualified', pipe.qualified || 0],
+    ['visit', 'Site Visit', (pipe.visit_scheduled || 0) + (pipe.visit_done || 0)], ['negotiation', 'Negotiation', pipe.negotiation || 0],
+    ['booked', 'Booked', pipe.booked || 0], ['lost', 'Lost', pipe.lost || 0],
+  ];
+  const ticks = [1, .75, .5, .25, 0];
+  return <div className="page admin-dashboard">
+    <section className="dash-hero">
+      <div className="dash-hero-top">
+        <span className="dash-hero-tag"><Icon name="building" />{me?.org?.name || 'Real Estate Enterprise'} &middot; {monthName}</span>
+        <span className="live-status"><i />Live Operations</span>
+      </div>
+      <h2 className="dash-hero-title">{money(d.sales.value)} Booked, <em>{d.sales.units} Homes</em> Sold This Month</h2>
+      <div className="dash-hero-sub">
+        <span><Icon name="layers" />Collections: <b>{money(d.collected)}</b></span>
+        <span><Icon name="building" />Available Units: <b>{inv.available || 0} / {total}</b></span>
+        <span><Icon name="calendar" />Site Visits Scheduled: <b>{upcomingVisits.length}</b></span>
+      </div>
+      <div className="dash-hero-actions">
+        <button className="btn sun" onClick={() => go('inventory')}><Icon name="grid" />Live Inventory &amp; Cost Sheets</button>
+        <button className="btn" onClick={() => go('leads')}><Icon name="funnel" />Lead Pipeline &amp; Copilot</button>
+        <button className="btn" onClick={() => go('portal')}><Icon name="shield" />Buyer Handover &amp; Progress</button>
+        <button className="btn" onClick={() => go('bookings')}><Icon name="receipt" />Registry Day Manager</button>
+      </div>
+    </section>
+    <section className="admin-kpi-grid">
+      <Kpi icon="layers" tone="green" label="Gross Sales Booked" value={money(d.sales.value)} detail={<><b className="mini-badge">{d.sales.units} units</b> this calendar month</>} />
+      <Kpi icon="wallet" tone="gold" label="Collections Deposited" value={money(d.collected)} detail="Milestone payments received in escrow" />
+      <Kpi icon="calendar" tone="blue" label="Available Inventory" value={<>{inv.available || 0}<small> / {total}</small></>} detail={<>{inv.hold || 0} on hold &middot; {inv.booked || 0} booked</>} progress={total ? (inv.available || 0) / total * 100 : 0} />
+      <Kpi icon="alert" tone="red" label="Open Complaints" value={d.tickets.open} detail={d.tickets.late ? <b className="mini-badge warning">{d.tickets.late} past 24h SLA</b> : <b className="mini-badge">All within 24h SLA</b>} />
+    </section>
+    <section className="admin-analytics-grid">
+      <article className="card admin-panel absorption-panel">
+        <header className="admin-panel-head"><h3><Icon name="chart" />Inventory Absorption &amp; 6-Month Trend</h3><span>{total} units across all projects</span></header>
+        <div className="admin-panel-body">
+          <div className="inventory-bar" role="img" aria-label="Inventory distribution by status">{INV.map(([key, label, color]) => inv[key] > 0 && <i key={key} style={{ flex: inv[key], background: color }} title={label + ': ' + inv[key]} />)}</div>
+          <div className="inventory-legend">{INV.map(([key, label, color]) => <span key={key}><i style={{ background: color }} />{label}: <b>{inv[key] || 0}</b></span>)}</div>
+          <div className="chart-heading">Gross Sales Value, Last 6 Months</div>
+          <div className="sales-chart" role="img" aria-label="Gross sales value over the last six months">
+            <div className="chart-y-axis">{ticks.map(tick => <span key={tick}>{tick ? money(maxTrend * tick) : '₹0'}</span>)}</div>
+            <div className="chart-plot">{ticks.map((tick, index) => <div key={index} className="chart-gridline" style={{ bottom: (tick * 100) + '%' }} />)}
+              {d.trend.map(t => { const barHeight = Math.max(Number(t.value) ? 4 : 0, Number(t.value || 0) / maxTrend * 100) + '%'; return <div className="chart-column" key={t.month} style={{ '--bar-height': barHeight }}><b className="chart-value">{money(t.value)}</b><i title={money(t.value) + ' · ' + t.units + ' deals'} /><span>{new Date(t.month + '-01T00:00:00').toLocaleDateString('en-IN', { month: 'short' })}</span></div>; })}
+            </div>
+          </div>
+        </div>
+      </article>
+      <article className="card admin-panel pipeline-panel">
+        <header className="admin-panel-head"><h3><Icon name="funnel" />Lead Pipeline &amp; Conversion</h3><button className="admin-text-action" onClick={() => go('leads')}>View Details <Icon name="arrow" /></button></header>
+        <div className="pipeline-list">{stageRows.map(([key, label, count]) => { const percent = Math.round(count / pipelineTotal * 100); return <button className="pipeline-row" key={key} onClick={() => go('leads')}><span>{label}</span><i><b style={{ width: percent + '%' }} /></i><strong>{count} <small>({percent}%)</small></strong></button>; })}</div>
+      </article>
+    </section>
+    <section className="admin-bottom-grid">
+      <article className="card admin-panel performers-panel">
+        <header className="admin-panel-head"><h3><Icon name="trophy" />Top Performers This Month</h3><button className="admin-text-action" onClick={() => go('team')}>View All <Icon name="arrow" /></button></header>
+        <div className="performer-table-wrap"><table className="performer-table"><thead><tr><th>Rank</th><th>Name &amp; Role</th><th>Category</th><th>Deals</th><th>Value (Cr)</th></tr></thead><tbody>
+          {d.leaderboard.slice(0, 5).map((person, index) => <tr key={person.id}><td>{index + 1}</td><td><span className="performer-name"><Avatar name={person.name} size="sm" /><b>{person.name}</b><small>{person.role === 'broker' ? 'Channel Partner' : 'Sales Executive'}</small></span></td><td>{person.role === 'broker' ? 'Channel Partner' : 'Sales Team'}</td><td>{person.units}</td><td>₹{(Number(person.value || 0) / 10000000).toFixed(2)}</td></tr>)}
+        </tbody></table>{d.leaderboard.length === 0 && <div className="admin-empty-compact">No bookings recorded this month.</div>}</div>
+      </article>
+      <article className="card admin-panel visits-panel">
+        <header className="admin-panel-head"><h3><Icon name="calendar" />Upcoming Site Visits</h3><button className="admin-text-action" onClick={() => go('visits')}>View Calendar <Icon name="arrow" /></button></header>
+        {upcomingVisits.length === 0 ? <div className="visits-empty"><span><Icon name="calendar" /></span><p>No site visits scheduled in next 7 days</p><button className="btn ink" onClick={() => go('visits')}>Schedule Site Visit</button></div> : <div className="visits-list">{upcomingVisits.slice(0, 4).map(visit => <button key={visit.id} onClick={() => go('leads/' + visit.lead_id)}><time>{dateTime(visit.scheduled_at)}</time><span><b>{visit.name}</b><small>{visit.agent || 'Unassigned advisor'}</small></span><Icon name="arrow" /></button>)}</div>}
+      </article>
+    </section>
+    {d.followups?.length > 0 && <section className="card admin-panel admin-followups"><header className="admin-panel-head"><h3>Pending &amp; Today&apos;s Follow-up Agenda</h3><span>{d.followups.length} scheduled client touches</span></header><div className="list">{d.followups.map(f => <div key={f.id} className="lrow"><span className="when">{dateTime(f.followup_at)}</span><button className="linkbtn" style={{ flex: 1, textAlign: 'left' }} onClick={() => go('leads/' + f.id)}><b>{f.name}</b><span className="muted"> &middot; {phone(f.phone)} &middot; Advisor: {f.agent || 'Unassigned'}</span></button></div>)}</div></section>}
+  </div>;
+}
+
+/* 2. Sales agent dashboard */
 function Sales({ d, me, go, say, reload }) {
   const pipe = Object.fromEntries(d.pipeline.map(x => [x.stage, x.n]));
   const open = Object.entries(pipe).filter(([k]) => !['booked', 'lost'].includes(k)).reduce((a, [, n]) => a + n, 0);

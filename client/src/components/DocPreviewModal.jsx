@@ -573,9 +573,9 @@ function CostSheetView({ data }) {
             <td className="doc-tar num">{inr(cs.club || 150000)}</td>
           </tr>
           <tr>
-            <td><b>GST (Goods & Services Tax)</b></td>
-            <td>{cs.gst_pct || 5}% as per Central & State Tax Schedule</td>
-            <td className="doc-tar num">{inr(cs.gst || Math.round((cs.base || 6000000) * 0.05))}</td>
+            <td><b>Registry charge</b></td>
+            <td>{cs.registry_pct ?? 7.5}% of property cost</td>
+            <td className="doc-tar num">{inr(cs.registry ?? Math.round((cs.base || 6000000) * 0.075))}</td>
           </tr>
           <tr>
             <td><b>Interest-Free Maintenance Security (IFMS)</b></td>
@@ -584,7 +584,7 @@ function CostSheetView({ data }) {
           </tr>
           <tr className="doc-total-row">
             <td><b>TOTAL ALL-INCLUSIVE PRICE</b></td>
-            <td><b>Inclusive of GST, Parking, Club & IFMS</b></td>
+            <td><b>Inclusive of registry, Parking, Club & IFMS</b></td>
             <td className="doc-tar num"><b>{inr(cs.total || unit.price || 0)}</b></td>
           </tr>
         </tbody>

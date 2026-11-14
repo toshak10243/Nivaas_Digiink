@@ -29,11 +29,22 @@ async function ticketSla() {
 }
 
 export function startJobs() {
+  let stopped = false;
+  let running = false;
   const run = async () => {
-    for (const job of [twinTakeovers, reassignStale, expireHolds, ticketSla]) {
-      try { await job(); } catch (e) { console.error('[job]', job.name, e.message); }
-    }
+    if (stopped || running) return;
+    running = true;
+    try {
+      for (const job of [twinTakeovers, reassignStale, expireHolds, ticketSla]) {
+        try { await job(); } catch (e) { console.error('[job]', job.name, e.message); }
+      }
+    } finally { running = false; }
   };
-  setInterval(run, 60 * 1000);
-  setTimeout(run, 5000);
+  const interval = setInterval(run, 60 * 1000);
+  const initial = setTimeout(run, 5000);
+  return () => {
+    stopped = true;
+    clearInterval(interval);
+    clearTimeout(initial);
+  };
 }

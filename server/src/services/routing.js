@@ -58,8 +58,8 @@ async function handoffChat(lead, who) {
   const project = lead.project_id ? await one(`SELECT name FROM projects WHERE id = $1`, [lead.project_id]) : null;
   const intro = `Namaste ${lead.name || ''}! I'm ${who.name} from ${project?.name || 'our team'}. I'll help you with your home search from here.`;
   try {
-    if (config.meta.introTemplate) await meta.sendTemplate(num, meta.normPhone(lead.phone), [lead.name || 'ji', who.name, project?.name || 'our project']);
-    else await meta.sendText(num, meta.normPhone(lead.phone), intro);
+    if (!config.meta.introTemplate) throw new Error('No approved WA_INTRO_TEMPLATE is configured; intro not sent.');
+    await meta.sendTemplate(num, meta.normPhone(lead.phone), [lead.name || 'ji', who.name, project?.name || 'our project']);
     await q(`INSERT INTO chat_messages (chat_id, sender, body) VALUES ($1,'system',$2)`, [chat.id, `Intro sent from ${who.name}'s WhatsApp: "${intro}"`]);
   } catch (e) {
     await q(`INSERT INTO chat_messages (chat_id, sender, body) VALUES ($1,'system',$2)`, [chat.id, `Could not send the intro message: ${e.message}`]);

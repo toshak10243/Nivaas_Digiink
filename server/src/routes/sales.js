@@ -10,11 +10,13 @@ import { assignLead } from '../services/routing.js';
 import * as meta from '../services/meta.js';
 import { config } from '../config.js';
 import { resolveObjection, generateHandoverBrief, generateVisitPassportData } from '../services/gemini.js';
+import { number, date as dateValue, oneOf } from '../lib/validate.js';
 
 import { validatePreview, reservePreview, previewReply } from '../services/ai-preview.js';
 
 const r = Router();
 const STAGES = ['new', 'contacted', 'qualified', 'visit_scheduled', 'visit_done', 'negotiation', 'booked', 'lost'];
+const TEMPERATURES = ['hot', 'warm', 'cold'];
 
 /** sales see their own leads, brokers see leads they own or registered, admins see all */
 function scope(user, alias = 'l', start = 2) {
@@ -28,6 +30,12 @@ async function leadFor(user, id) {
   const l = await one(`SELECT l.* FROM leads l WHERE l.id = $1 AND l.org_id = $2${s.sql}`, [id, user.org, ...s.vals]);
   if (!l) throw fail(404, 'Lead not found');
   return l;
+}
+async function assertOrgUser(id, org, roles) {
+  if (!id) return null;
+  const u = await one(`SELECT id, role, active FROM users WHERE id = $1 AND org_id = $2`, [id, org]);
+  if (!u || !u.active || (roles && !roles.includes(u.role))) throw fail(400, 'Selected user must be active and belong to this organization');
+  return u;
 }
 
 // ---------- leads ----------
@@ -43,66 +51,6 @@ r.get('/leads', allow('admin', 'sales', 'broker'), h(async (req, res) => {
      FROM leads l LEFT JOIN users a ON a.id = l.assigned_to LEFT JOIN users b ON b.id = l.broker_id
      LEFT JOIN projects p ON p.id = l.project_id LEFT JOIN units u ON u.id = l.unit_id
      WHERE l.org_id = $1${s.sql}${extra} ORDER BY l.updated_at DESC LIMIT 500`, vals));
-}));
-
-r.post('/leads/bulk', allow('admin', 'sales', 'broker'), h(async (req, res) => {
-  const { ids, action, value } = req.body || {};
-  if (!Array.isArray(ids) || !ids.length || ids.length > 500 || ids.some(id => typeof id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))) throw fail(400, 'Select between 1 and 500 leads.');
-  if (!['stage', 'assign', 'delete', 'complete'].includes(action)) throw fail(400, 'Unknown bulk action.');
-  if (['assign', 'delete'].includes(action) && req.user.role !== 'admin') throw fail(403, 'Only admins can transfer or delete leads.');
-  if (action === 'stage' && !STAGES.includes(value)) throw fail(400, 'Unknown stage.');
-  const unique = [...new Set(ids)];
-  await tx(async db => {
-    const s = scope(req.user, 'l', 3);
-    const rows = await db.many(`SELECT l.* FROM leads l WHERE l.org_id=$1 AND l.id=ANY($2::uuid[])${s.sql} ORDER BY l.id FOR UPDATE`, [req.user.org, unique, ...s.vals]);
-    if (rows.length !== unique.length) throw fail(403, 'Some selected leads are no longer accessible. Refresh and try again.');
-    let assignee;
-    if (action === 'assign') {
-      if (typeof value !== 'string' || !/^[0-9a-f-]{36}$/i.test(value)) throw fail(400, 'Select an active sales agent or broker.');
-      assignee = await db.one("SELECT id,name FROM users WHERE id=$1 AND org_id=$2 AND active AND role IN ('sales','broker')", [value, req.user.org]);
-      if (!assignee) throw fail(400, 'Select an active sales agent or broker.');
-    }
-    if (action === 'delete') {
-      if (rows.some(l => l.stage === 'booked') || await db.one('SELECT id FROM bookings WHERE lead_id=ANY($1::uuid[]) LIMIT 1', [unique])) throw fail(409, 'Leads linked to bookings cannot be deleted. Deselect them first.');
-      await db.q('DELETE FROM leads WHERE org_id=$1 AND id=ANY($2::uuid[])', [req.user.org, unique]);
-      return;
-    }
-    for (const l of rows) {
-      if (action === 'complete' && !l.followup_at) continue;
-      if (action === 'stage') await db.q('UPDATE leads SET stage=$2,updated_at=now() WHERE id=$1', [l.id, value]);
-      if (action === 'complete') await db.q('UPDATE leads SET followup_at=NULL,followup_type=NULL,followup_note=NULL,updated_at=now() WHERE id=$1', [l.id]);
-      if (action === 'assign') {
-        await db.q('UPDATE leads SET assigned_to=$2,assigned_at=now(),first_touch_at=NULL,updated_at=now() WHERE id=$1', [l.id, value]);
-        await db.q('UPDATE site_visits SET agent_id=$2 WHERE lead_id=$1 AND status IN (\'scheduled\',\'confirmed\')', [l.id, value]);
-        await db.q('UPDATE chats SET agent_id=NULL,ai_enabled=false,pending_ai_at=NULL WHERE lead_id=$1', [l.id]);
-        const number = await db.one('SELECT id FROM wa_numbers WHERE org_id=$1 AND user_id=$2 ORDER BY created_at LIMIT 1', [req.user.org, value]);
-        if (number) await db.q('INSERT INTO chats(org_id,lead_id,wa_number_id,agent_id) VALUES ($1,$2,$3,$4) ON CONFLICT(lead_id,wa_number_id) DO UPDATE SET agent_id=EXCLUDED.agent_id', [req.user.org,l.id,number.id,value]);
-        await db.q("INSERT INTO notifications(org_id,user_id,kind,body,link) VALUES ($1,$2,'lead_assigned',$3,$4)", [req.user.org, value, `Lead assigned: ${l.name || l.phone}`, `/leads/${l.id}`]);
-      }
-      await db.q('INSERT INTO lead_events(lead_id,actor_id,kind,body) VALUES ($1,$2,$3,$4)', [l.id, req.user.id, action === 'assign' ? 'assigned' : action === 'complete' ? 'followup' : 'stage', action === 'assign' ? `Bulk assigned to ${assignee.name}` : action === 'complete' ? 'Follow-up marked completed' : `Stage: ${l.stage} → ${value}`]);
-    }
-  });
-  res.json({ ok: true, count: unique.length });
-}));
-
-r.post('/leads/bulk-message', allow('admin', 'sales'), h(async (req, res) => {
-  const { ids, text } = req.body || {};
-  if (!Array.isArray(ids) || !ids.length || ids.length > 50 || ids.some(id => typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id))) throw fail(400, 'Select up to 50 leads to message.');
-  if (typeof text !== 'string' || !text.trim() || text.length > 4000) throw fail(400, 'Enter a message of up to 4000 characters.');
-  const s = scope(req.user, 'l', 3), unique = [...new Set(ids)];
-  const leads = await many(`SELECT l.* FROM leads l WHERE l.org_id=$1 AND l.id=ANY($2::uuid[])${s.sql}`, [req.user.org, unique, ...s.vals]);
-  if (leads.length !== unique.length) throw fail(403, 'Some selected leads are no longer accessible.');
-  const sent = [], failed = [];
-  for (const lead of leads) {
-    const c = await one(`SELECT c.*,w.phone_number_id,w.access_token FROM chats c JOIN wa_numbers w ON w.id=c.wa_number_id WHERE c.lead_id=$1 AND c.org_id=$2 AND c.last_customer_at > now()-interval '24 hours' ${req.user.role === 'admin' ? '' : 'AND c.agent_id=$3'} ORDER BY c.last_customer_at DESC LIMIT 1`, req.user.role === 'admin' ? [lead.id, req.user.org] : [lead.id, req.user.org, req.user.id]);
-    if (!c) { failed.push({ id: lead.id, reason: 'No connected WhatsApp conversation with a customer reply in the last 24 hours.' }); continue; }
-    try { await meta.sendText(c, meta.normPhone(lead.phone), text.trim()); }
-    catch { failed.push({ id: lead.id, reason: 'WhatsApp rejected the message. Check the connection before retrying.' }); continue; }
-    await q("INSERT INTO chat_messages(chat_id,sender,body) VALUES ($1,'agent',$2)", [c.id, text.trim()]);
-    await q('UPDATE chats SET last_agent_at=now(),pending_ai_at=NULL WHERE id=$1', [c.id]);
-    sent.push(lead.id);
-  }
-  res.json({ sent, failed });
 }));
 
 r.get('/leads/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => {
@@ -125,6 +73,12 @@ r.post('/leads', allow('admin', 'sales', 'broker'), h(async (req, res) => {
   const b = req.body || {};
   const phone = meta.normPhone(b.phone);
   if (!b.name || phone.length < 10) throw fail(400, 'Name and a valid phone number are required');
+  if (b.stage !== undefined) oneOf(b.stage, 'Lead stage', STAGES, { optional: false });
+  if (b.temperature !== undefined) oneOf(b.temperature, 'Lead temperature', TEMPERATURES, { optional: false });
+  const followupAt = b.followup_at ? dateValue(b.followup_at, 'Follow-up date', { optional: false }) : null;
+  if (b.followup_type) oneOf(b.followup_type, 'Follow-up type', ['call', 'whatsapp', 'meeting', 'doc'], { optional: false });
+  if (b.project_id && !(await one(`SELECT 1 FROM projects WHERE id = $1 AND org_id = $2`, [b.project_id, req.user.org]))) throw fail(400, 'Project is not part of this organization');
+  if (req.user.role === 'admin' && b.assigned_to) await assertOrgUser(b.assigned_to, req.user.org, ['sales', 'broker']);
   const dupe = await one(`SELECT l.id, l.broker_id, l.assigned_to, u.name AS owner FROM leads l LEFT JOIN users u ON u.id = COALESCE(l.broker_id, l.assigned_to)
                           WHERE l.org_id = $1 AND l.phone = $2 AND l.stage <> 'lost'`, [req.user.org, phone]);
   if (dupe) throw fail(409, `This customer is already registered${dupe.owner ? ' with ' + dupe.owner : ''}.`);
@@ -133,8 +87,8 @@ r.post('/leads', allow('admin', 'sales', 'broker'), h(async (req, res) => {
     `INSERT INTO leads (org_id, project_id, name, phone, email, source, budget, config_pref, purpose, timeline, notes, broker_id, assigned_to, assigned_at, first_touch_at, stage, followup_at, followup_type, followup_note)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, CASE WHEN $13::uuid IS NULL THEN NULL ELSE now() END, CASE WHEN $13::uuid IS NULL THEN NULL ELSE now() END, $14, $15, $16, $17) RETURNING *`,
     [req.user.org, b.project_id || null, b.name, phone, b.email || null, isBroker ? 'broker' : (b.source || 'manual'), b.budget, b.config_pref, b.purpose, b.timeline, b.notes,
-      isBroker ? req.user.id : null, req.user.role === 'admin' ? (b.assigned_to || null) : req.user.id, b.stage && STAGES.includes(b.stage) ? b.stage : 'contacted',
-      b.followup_at || null, b.followup_type || 'call', b.followup_note || null]);
+      isBroker ? req.user.id : null, req.user.role === 'admin' ? (b.assigned_to || null) : req.user.id, b.stage || 'contacted',
+      followupAt, b.followup_type || 'call', b.followup_note || null]);
   await logLead(lead.id, req.user.id, 'created', isBroker ? `Registered by broker ${req.user.name}` : `Added by ${req.user.name}`);
   if (lead.followup_at) {
     const fDate = new Date(lead.followup_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
@@ -148,13 +102,17 @@ r.post('/leads', allow('admin', 'sales', 'broker'), h(async (req, res) => {
 r.patch('/leads/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => {
   const l = await leadFor(req.user, req.params.id);
   const b = req.body || {};
-  if (b.stage && !STAGES.includes(b.stage)) throw fail(400, 'Unknown stage');
-  const preferences = ['1 BHK','2 BHK','3 BHK','4 BHK','Parking','Home loan','Ready to move'];
-  const checklist = ['call_done','visit_done','documents_sent','pan_received','aadhaar_received','booking_form','agreement_signed'];
-  if (b.preferences !== undefined && (!Array.isArray(b.preferences) || b.preferences.length > preferences.length || b.preferences.some(v => !preferences.includes(v)))) throw fail(400, 'Invalid preferences');
-  if (b.checklist !== undefined && (!b.checklist || Array.isArray(b.checklist) || typeof b.checklist !== 'object' || Object.entries(b.checklist).some(([k,v]) => !checklist.includes(k) || typeof v !== 'boolean'))) throw fail(400, 'Invalid checklist');
-  const followupAt = b.followup_at !== undefined ? (b.followup_at ? new Date(b.followup_at).toISOString() : null) : l.followup_at;
+  if (b.stage !== undefined) oneOf(b.stage, 'Lead stage', STAGES, { optional: false });
+  if (b.temperature !== undefined) oneOf(b.temperature, 'Lead temperature', TEMPERATURES, { optional: false });
+  const projectId = b.project_id || l.project_id;
+  if (b.project_id && !(await one(`SELECT 1 FROM projects WHERE id = $1 AND org_id = $2`, [b.project_id, req.user.org]))) throw fail(400, 'Project is not part of this organization');
+  if (b.unit_id) {
+    const unit = await one(`SELECT u.project_id FROM units u JOIN projects p ON p.id = u.project_id WHERE u.id = $1 AND p.org_id = $2`, [b.unit_id, req.user.org]);
+    if (!unit || (projectId && unit.project_id !== projectId)) throw fail(400, 'Unit must belong to the selected project and organization');
+  }
+  const followupAt = b.followup_at !== undefined ? (b.followup_at ? dateValue(b.followup_at, 'Follow-up date', { optional: false }) : null) : l.followup_at;
   const followupType = b.followup_type !== undefined ? b.followup_type : l.followup_type;
+  if (followupType) oneOf(followupType, 'Follow-up type', ['call', 'whatsapp', 'meeting', 'doc'], { optional: false });
   const followupNote = b.followup_note !== undefined ? b.followup_note : l.followup_note;
 
   const row = await one(
@@ -162,13 +120,10 @@ r.patch('/leads/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => {
        purpose = COALESCE($6,purpose), timeline = COALESCE($7,timeline), notes = COALESCE($8,notes), stage = COALESCE($9,stage),
        temperature = COALESCE($10,temperature), project_id = COALESCE($11,project_id), unit_id = COALESCE($12,unit_id), lost_reason = COALESCE($13,lost_reason),
        followup_at = $14, followup_type = $15, followup_note = $16,
-       preferences = COALESCE($18::jsonb,preferences), checklist = COALESCE($19::jsonb,checklist),
        first_touch_at = COALESCE(first_touch_at, CASE WHEN assigned_to = $17 THEN now() END), updated_at = now()
      WHERE id = $1 RETURNING *`,
     [l.id, b.name, b.email, b.budget, b.config_pref, b.purpose, b.timeline, b.notes, b.stage, b.temperature, b.project_id, b.unit_id, b.lost_reason,
-     followupAt, followupType, followupNote, req.user.id, b.preferences === undefined ? null : JSON.stringify(b.preferences), b.checklist === undefined ? null : JSON.stringify(b.checklist)]);
-
-  if (b.checklist !== undefined) await logLead(l.id, req.user.id, 'note', `Checklist updated: ${Object.entries(b.checklist).filter(([k,v]) => l.checklist?.[k] !== v).map(([k,v]) => `${k.replaceAll('_',' ')}: ${v ? 'done' : 'pending'}`).join(', ')}`);
+     followupAt, followupType, followupNote, req.user.id]);
 
   if (b.stage && b.stage !== l.stage) await logLead(l.id, req.user.id, 'stage', `Stage: ${l.stage.replace('_', ' ')} → ${b.stage.replace('_', ' ')}${b.lost_reason ? ` (${b.lost_reason})` : ''}`);
 
@@ -186,7 +141,9 @@ r.patch('/leads/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => {
 
 r.post('/leads/:id/assign', allow('admin'), h(async (req, res) => {
   await leadFor(req.user, req.params.id);
-  const who = await assignLead(req.params.id, { actorId: req.user.id, userId: req.body?.user_id || null, reason: req.body?.user_id ? 'manual' : 'auto' });
+  const userId = req.body?.user_id || null;
+  if (userId) await assertOrgUser(userId, req.user.org, ['sales', 'broker']);
+  const who = await assignLead(req.params.id, { actorId: req.user.id, userId, reason: userId ? 'manual' : 'auto' });
   if (!who) throw fail(409, 'Nobody available to assign');
   res.json(who);
 }));
@@ -211,12 +168,18 @@ r.get('/visits', allow('admin', 'sales', 'broker'), h(async (req, res) => {
 r.post('/visits', allow('admin', 'sales', 'broker'), h(async (req, res) => {
   const { lead_id, project_id, scheduled_at, visitors_count = 1, transport = 'Self', pickup_address } = req.body || {};
   if (!lead_id) throw fail(400, 'Select a lead');
-  if (!scheduled_at || isNaN(new Date(scheduled_at))) throw fail(400, 'Pick date and time');
+  const scheduledAt = dateValue(scheduled_at, 'Visit date and time', { optional: false });
+  const visitors = number(visitors_count, 'Visitor count', { min: 1, max: 100, integer: true, optional: false });
+  oneOf(transport, 'Transport preference', ['Self', 'cab', 'self'], { optional: false });
   const l = await leadFor(req.user, lead_id);
+  if (project_id) {
+    const project = await one(`SELECT id FROM projects WHERE id = $1 AND org_id = $2`, [project_id, req.user.org]);
+    if (!project || (l.project_id && l.project_id !== project_id)) throw fail(400, 'Project must match the lead and organization');
+  }
   const v = await one(
     `INSERT INTO site_visits (org_id, lead_id, project_id, agent_id, scheduled_at, visitors_count, transport, pickup_address)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-    [req.user.org, l.id, project_id || l.project_id, l.assigned_to || req.user.id, scheduled_at, Number(visitors_count) || 1, transport, pickup_address || null]);
+     [req.user.org, l.id, project_id || l.project_id, l.assigned_to || req.user.id, scheduledAt, visitors, transport, pickup_address || null]);
 
   await q(`UPDATE leads SET stage = 'visit_scheduled', first_touch_at = COALESCE(first_touch_at, now()) WHERE id = $1 AND stage IN ('new','contacted','qualified')`, [l.id]);
   const when = new Date(scheduled_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
@@ -228,11 +191,13 @@ r.post('/visits', allow('admin', 'sales', 'broker'), h(async (req, res) => {
 r.post('/leads/:id/visits', allow('admin', 'sales', 'broker'), h(async (req, res) => {
   const l = await leadFor(req.user, req.params.id);
   const { scheduled_at, visitors_count = 1, transport = 'Self', pickup_address } = req.body || {};
-  if (!scheduled_at || isNaN(new Date(scheduled_at))) throw fail(400, 'Pick a date and time');
+  const scheduledAt = dateValue(scheduled_at, 'Visit date and time', { optional: false });
+  const visitors = number(visitors_count, 'Visitor count', { min: 1, max: 100, integer: true, optional: false });
+  oneOf(transport, 'Transport preference', ['Self', 'cab', 'self'], { optional: false });
   const v = await one(
     `INSERT INTO site_visits (org_id, lead_id, project_id, agent_id, scheduled_at, visitors_count, transport, pickup_address)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-    [req.user.org, l.id, l.project_id, l.assigned_to || req.user.id, scheduled_at, Number(visitors_count) || 1, transport, pickup_address || null]);
+    [req.user.org, l.id, l.project_id, l.assigned_to || req.user.id, scheduledAt, visitors, transport, pickup_address || null]);
   await q(`UPDATE leads SET stage = 'visit_scheduled', first_touch_at = COALESCE(first_touch_at, now()) WHERE id = $1 AND stage IN ('new','contacted','qualified')`, [l.id]);
   const when = new Date(scheduled_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
   await logLead(l.id, req.user.id, 'visit', `Site visit scheduled for ${when} (${visitors_count} visitors · ${transport})`);
@@ -279,6 +244,7 @@ r.post('/leads/:id/ai-handover', allow('admin', 'sales', 'broker'), h(async (req
 r.post('/visits/:id/ai-passport', allow('admin', 'sales', 'broker'), h(async (req, res) => {
   const v = await one(`SELECT v.*, u.name as agent FROM site_visits v LEFT JOIN users u ON u.id = v.agent_id WHERE v.id = $1 AND v.org_id = $2`, [req.params.id, req.user.org]);
   if (!v) throw fail(404, 'Visit not found');
+  await leadFor(req.user, v.lead_id);
   const l = await one(`SELECT * FROM leads WHERE id = $1`, [v.lead_id]);
   const p = await one(`SELECT * FROM projects WHERE id = $1`, [v.project_id]);
   const body = req.body || {};
@@ -289,24 +255,25 @@ r.post('/visits/:id/ai-passport', allow('admin', 'sales', 'broker'), h(async (re
   if (body.commitments) passport.commitments = body.commitments;
   if (body.questions) passport.questions = body.questions;
   await q(`UPDATE site_visits SET evidence_passport = $2 WHERE id = $1`, [v.id, JSON.stringify(passport)]);
-  await logLead(v.lead_id, req.user.id, 'visit', `AI Site Visit Passport #${passport.passportId} created & verified`);
+  await logLead(v.lead_id, req.user.id, 'visit', `AI site visit notes record ${passport.recordId} created`);
   res.json({ passport, ...passport });
 }));
 
 // Feature 8: Smart Site Visit Route & Staff Allocation
 r.get('/visits/allocation-suggestions', allow('admin', 'sales'), h(async (req, res) => {
   const { date = new Date().toISOString().slice(0, 10) } = req.query;
+  const visitDate = dateValue(date, 'Allocation date', { optional: false }).slice(0, 10);
   const agents = await many(
     `SELECT u.id, u.name, u.role, u.profile,
        (SELECT count(*)::int FROM site_visits v WHERE v.agent_id = u.id AND v.status IN ('scheduled','confirmed') AND date_trunc('day', v.scheduled_at) = $2::date) AS today_visits
      FROM users u WHERE u.org_id = $1 AND u.role = 'sales' AND u.active ORDER BY today_visits ASC, u.name`,
-    [req.user.org, date]);
+    [req.user.org, visitDate]);
 
   const allVisits = await many(
     `SELECT v.id, v.scheduled_at, v.agent_id, v.status, u.name AS agent_name
      FROM site_visits v LEFT JOIN users u ON u.id = v.agent_id
      WHERE v.org_id = $1 AND date_trunc('day', v.scheduled_at) = $2::date AND v.status IN ('scheduled','confirmed')`,
-    [req.user.org, date]);
+    [req.user.org, visitDate]);
 
   // Detect overlapping visits (same agent, scheduled within 90 minutes of each other)
   const conflicts = [];
@@ -330,7 +297,7 @@ r.get('/visits/allocation-suggestions', allow('admin', 'sales'), h(async (req, r
   }
 
   res.json({
-    date,
+    date: visitDate,
     agents,
     conflicts,
     suggestedAgent: agents.find(a => (a.profile?.availability || 'available') === 'available') || agents[0],
@@ -339,19 +306,21 @@ r.get('/visits/allocation-suggestions', allow('admin', 'sales'), h(async (req, r
 
 r.patch('/visits/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => {
   const { status, feedback, rating, interested_unit, reschedule_at } = req.body || {};
+  oneOf(status, 'Visit status', ['scheduled', 'confirmed', 'done', 'no_show', 'cancelled', 'rescheduled']);
+  const ratingValue = rating === undefined || rating === null || rating === '' ? null : number(rating, 'Visit rating', { min: 1, max: 5, integer: true, optional: false });
+  if (status === 'rescheduled' && !reschedule_at) throw fail(400, 'A new date and time are required to reschedule');
   const cur = await one(`SELECT * FROM site_visits WHERE id = $1 AND org_id = $2`, [req.params.id, req.user.org]);
   if (!cur) throw fail(404, 'Visit not found');
+  await leadFor(req.user, cur.lead_id);
 
   let newTime = cur.scheduled_at;
-  if (status === 'rescheduled' && reschedule_at && !isNaN(new Date(reschedule_at))) {
-    newTime = new Date(reschedule_at).toISOString();
-  }
+  if (status === 'rescheduled') newTime = dateValue(reschedule_at, 'New visit date and time', { optional: false });
 
   const v = await one(
     `UPDATE site_visits SET status = COALESCE($3,status), feedback = COALESCE($4,feedback),
        rating = COALESCE($5,rating), interested_unit = COALESCE($6,interested_unit),
        scheduled_at = $7 WHERE id = $1 AND org_id = $2 RETURNING *`,
-    [cur.id, req.user.org, status, feedback, rating ? Number(rating) : null, interested_unit, newTime]);
+    [cur.id, req.user.org, status, feedback, ratingValue, interested_unit, newTime]);
 
   if (status === 'done') {
     await q(`UPDATE leads SET stage = 'visit_done' WHERE id = $1 AND stage IN ('visit_scheduled','qualified','contacted')`, [v.lead_id]);
@@ -373,6 +342,14 @@ r.post('/share', allow('admin', 'sales', 'broker'), h(async (req, res) => {
   const { project_id, unit_id, lead_id } = req.body || {};
   const p = await one(`SELECT id FROM projects WHERE id = $1 AND org_id = $2`, [project_id, req.user.org]);
   if (!p) throw fail(404, 'Project not found');
+  if (unit_id) {
+    const unit = await one(`SELECT id FROM units WHERE id = $1 AND project_id = $2`, [unit_id, p.id]);
+    if (!unit) throw fail(400, 'Unit must belong to the selected project');
+  }
+  if (lead_id) {
+    const lead = await leadFor(req.user, lead_id);
+    if (lead.project_id && lead.project_id !== p.id) throw fail(400, 'Lead must belong to the selected project');
+  }
   const existing = await one(`SELECT * FROM share_links WHERE created_by = $1 AND project_id = $2 AND unit_id IS NOT DISTINCT FROM $3 AND lead_id IS NOT DISTINCT FROM $4`,
     [req.user.id, p.id, unit_id || null, lead_id || null]);
   const link = existing || await one(`INSERT INTO share_links (org_id, created_by, project_id, unit_id, lead_id) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
@@ -416,6 +393,7 @@ r.post('/chats', allow('admin', 'sales'), h(async (req, res) => {
     }
   }
   if (!lead) throw fail(400, 'Please select a lead or enter a valid mobile number');
+  if (req.user.role === 'sales') await leadFor(req.user, lead.id);
 
   let num = await one(`SELECT * FROM wa_numbers WHERE org_id = $1 AND user_id = $2`, [req.user.org, req.user.id]);
   if (!num) num = await one(`SELECT * FROM wa_numbers WHERE org_id = $1 ORDER BY user_id NULLS LAST LIMIT 1`, [req.user.org]);
@@ -425,23 +403,35 @@ r.post('/chats', allow('admin', 'sales'), h(async (req, res) => {
   if (!chat) {
     chat = await one(
       `INSERT INTO chats (org_id, lead_id, wa_number_id, agent_id, last_customer_at)
-       VALUES ($1,$2,$3,$4,now()) RETURNING *`,
+       VALUES ($1,$2,$3,$4,NULL) RETURNING *`,
       [req.user.org, lead.id, num.id, req.user.id]);
   }
 
+  let templateSent = false;
   if (initial_message && String(initial_message).trim()) {
     const text = String(initial_message).trim();
+    const withinWindow = chat.last_customer_at && Date.now() - new Date(chat.last_customer_at) <= 24 * 3600e3;
+    let sent;
     try {
-      if (config.meta.introTemplate) await meta.sendTemplate(num, meta.normPhone(lead.phone), [lead.name || 'ji', req.user.name, 'our project']);
-      else await meta.sendText(num, meta.normPhone(lead.phone), text);
+      if (withinWindow) {
+        sent = await meta.sendText(num, meta.normPhone(lead.phone), text);
+      } else {
+        if (!config.meta.introTemplate) throw fail(409, 'An approved WhatsApp intro template is required to message a customer who has not messaged in the last 24 hours. Configure it in the server environment.');
+        sent = await meta.sendTemplate(num, meta.normPhone(lead.phone), [lead.name || 'ji', req.user.name, 'our project']);
+        templateSent = true;
+      }
     } catch (e) {
-      console.warn('[wa send]', e.message);
+      if (e.status) throw e;
+      console.error('[wa send] initial message failed:', e.message);
+      throw fail(502, `WhatsApp did not send the message: ${e.message}`);
     }
-    await one(`INSERT INTO chat_messages (chat_id, sender, body) VALUES ($1,'agent',$2) RETURNING *`, [chat.id, text]);
+    const body = withinWindow ? text : `Approved WhatsApp template sent: ${config.meta.introTemplate}`;
+    await one(`INSERT INTO chat_messages (chat_id, sender, body, ext_id) VALUES ($1,$2,$3,$4) RETURNING *`,
+      [chat.id, withinWindow ? 'agent' : 'system', body, sent?.messages?.[0]?.id || null]);
     await q(`UPDATE chats SET last_agent_at = now() WHERE id = $1`, [chat.id]);
   }
 
-  res.json({ ...chat, name: lead.name, phone: lead.phone });
+  res.json({ ...chat, name: lead.name, phone: lead.phone, templateSent });
 }));
 async function chatFor(user, id) {
   const c = await one(`SELECT c.*, w.phone_number_id, w.access_token, w.display, l.phone, l.name, l.id AS lead_id FROM chats c JOIN wa_numbers w ON w.id = c.wa_number_id JOIN leads l ON l.id = c.lead_id
@@ -518,28 +508,54 @@ r.post('/bookings', allow('admin', 'sales'), h(async (req, res) => {
   if (!unit) throw fail(404, 'Unit not found');
   if (!['available', 'hold'].includes(unit.status)) throw fail(409, `${unit.unit_no} is already ${unit.status}`);
   if (unit.status === 'hold' && unit.hold_by !== req.user.id && req.user.role !== 'admin') throw fail(409, `${unit.unit_no} is on hold by someone else`);
-  const type = await one(`SELECT * FROM unit_types WHERE id = $1`, [unit.unit_type_id]);
-  const list = costSheet(unit, type, unit).total;
-  const discount = Math.max(0, Number(b.discount || 0));
-  const deal = Math.round(list - discount);
-  const lead = b.lead_id ? await one(`SELECT * FROM leads WHERE id = $1 AND org_id = $2`, [b.lead_id, req.user.org]) : null;
+  const discount = number(b.discount ?? 0, 'Discount', { min: 0, max: 1_000_000_000, optional: false });
+  const bookingAmount = number(b.booking_amount ?? 0, 'Booking amount', { min: 0, max: 1_000_000_000, optional: false });
+  const bookingDate = b.booking_date ? dateValue(b.booking_date, 'Booking date', { optional: false }) : null;
+  if (b.payment_mode !== undefined) oneOf(b.payment_mode, 'Payment mode', ['NEFT', 'RTGS', 'Cheque', 'UPI', 'Home loan disbursal'], { optional: false });
+  if (b.payment_ref !== undefined && (typeof b.payment_ref !== 'string' || b.payment_ref.length > 120)) throw fail(400, 'Payment reference must be at most 120 characters');
+  const lead = b.lead_id ? await leadFor(req.user, b.lead_id) : null;
+  if (b.lead_id && !lead) throw fail(404, 'Lead not found');
+  if (lead?.project_id && lead.project_id !== unit.project_id) throw fail(400, 'Lead and unit must belong to the same project');
   const custName = b.customer_name || lead?.name, custPhone = meta.normPhone(b.customer_phone || lead?.phone), custEmail = (b.customer_email || lead?.email || '').trim();
   if (!custName || !custEmail) throw fail(400, 'Customer name and email are needed (the email becomes their portal login)');
-  const soldBy = req.user.role === 'sales' ? req.user.id : (b.sold_by || lead?.assigned_to || null);
-  const brokerId = b.broker_id || lead?.broker_id || null;
+  const leadAssignee = lead?.assigned_to ? await one(`SELECT id, role, active FROM users WHERE id = $1 AND org_id = $2`, [lead.assigned_to, req.user.org]) : null;
+  const soldBy = req.user.role === 'sales' ? req.user.id : (b.sold_by || (leadAssignee?.active && leadAssignee.role === 'sales' ? leadAssignee.id : null));
+  const brokerId = req.user.role === 'admin' ? (b.broker_id || lead?.broker_id || null) : (lead?.broker_id || null);
+  if (req.user.role === 'admin' && soldBy) await assertOrgUser(soldBy, req.user.org, ['sales']);
+  if (brokerId) await assertOrgUser(brokerId, req.user.org, ['broker']);
   const temp = crypto.randomBytes(5).toString('base64url');
+  let bookedUnit = unit, deal = 0;
 
   const out = await tx(async t => {
+    const lockedUnit = await t.one(`SELECT u.*, p.org_id, p.rate_sqft, p.charges, p.payment_plan, p.name AS project_name
+                                   FROM units u JOIN projects p ON p.id = u.project_id
+                                   WHERE u.id = $1 AND p.org_id = $2 FOR UPDATE OF u`, [b.unit_id, req.user.org]);
+    if (!lockedUnit) throw fail(404, 'Unit not found');
+    if (!['available', 'hold'].includes(lockedUnit.status)) throw fail(409, `${lockedUnit.unit_no} is already ${lockedUnit.status}`);
+    if (lockedUnit.status === 'hold' && lockedUnit.hold_by !== req.user.id && req.user.role !== 'admin') throw fail(409, `${lockedUnit.unit_no} is on hold by someone else`);
+    const type = await t.one(`SELECT * FROM unit_types WHERE id = $1 AND project_id = $2`, [lockedUnit.unit_type_id, lockedUnit.project_id]);
+    const listPrice = costSheet(lockedUnit, type, lockedUnit).total;
+    if (discount > listPrice) throw fail(400, 'Discount cannot exceed the unit price');
+    deal = Math.round(listPrice - discount);
+    if (bookingAmount > deal) throw fail(400, 'Booking amount cannot exceed the deal value');
+    bookedUnit = lockedUnit;
+    const claimed = await t.one(`UPDATE units SET status = 'booked', hold_by = NULL, hold_until = NULL, updated_at = now()
+                                 WHERE id = $1 AND status IN ('available','hold')
+                                   AND (status <> 'hold' OR hold_by = $2 OR $3 = 'admin') RETURNING id`,
+      [lockedUnit.id, req.user.id, req.user.role]);
+    if (!claimed) throw fail(409, `${lockedUnit.unit_no} is no longer available to book`);
     let cust = await t.one(`SELECT id FROM users WHERE org_id = $1 AND lower(email) = lower($2)`, [req.user.org, custEmail]);
     let newLogin = false;
-    if (!cust) { cust = await t.one(`INSERT INTO users (org_id, role, name, email, phone, password_hash) VALUES ($1,'customer',$2,$3,$4,$5) RETURNING id`, [req.user.org, custName, custEmail, custPhone, await bcrypt.hash(temp, 10)]); newLogin = true; }
+    if (cust) {
+      const customerRole = await t.one(`SELECT id FROM users WHERE id = $1 AND role = 'customer'`, [cust.id]);
+      if (!customerRole) throw fail(409, 'That email is already used by a non-customer account');
+    } else { cust = await t.one(`INSERT INTO users (org_id, role, name, email, phone, password_hash) VALUES ($1,'customer',$2,$3,$4,$5) RETURNING id`, [req.user.org, custName, custEmail, custPhone, await bcrypt.hash(temp, 10)]); newLogin = true; }
     const booking = await t.one(
       `INSERT INTO bookings (org_id, unit_id, lead_id, customer_id, sold_by, broker_id, deal_value, discount, booking_amount, booking_date, schedule, notes)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, COALESCE($10::date, current_date), $11, $12) RETURNING *`,
-      [req.user.org, unit.id, lead?.id || null, cust.id, soldBy, brokerId, deal, discount, Number(b.booking_amount || 0), b.booking_date || null, JSON.stringify(scheduleFor(unit, deal)), b.notes || null]);
-    await t.q(`UPDATE units SET status = 'booked', hold_by = NULL, hold_until = NULL, updated_at = now() WHERE id = $1`, [unit.id]);
-    if (Number(b.booking_amount) > 0) await t.q(`INSERT INTO payments (booking_id, amount, mode, ref, milestone) VALUES ($1,$2,$3,$4,'Booking amount')`, [booking.id, b.booking_amount, b.payment_mode || null, b.payment_ref || null]);
-    if (lead) await t.q(`UPDATE leads SET stage = 'booked', unit_id = $2, updated_at = now() WHERE id = $1`, [lead.id, unit.id]);
+      [req.user.org, lockedUnit.id, lead?.id || null, cust.id, soldBy, brokerId, deal, discount, bookingAmount, bookingDate, JSON.stringify(scheduleFor(lockedUnit, deal)), b.notes || null]);
+    if (bookingAmount > 0) await t.q(`INSERT INTO payments (booking_id, amount, mode, ref, milestone) VALUES ($1,$2,$3,$4,'Booking amount')`, [booking.id, bookingAmount, b.payment_mode || null, b.payment_ref || null]);
+    if (lead) await t.q(`UPDATE leads SET stage = 'booked', unit_id = $2, updated_at = now() WHERE id = $1`, [lead.id, lockedUnit.id]);
     // money for the people who sold it
     for (const [uid, kind] of [[soldBy, 'sales_incentive'], [brokerId, 'broker_commission']]) {
       if (!uid) continue;
@@ -552,38 +568,64 @@ r.post('/bookings', allow('admin', 'sales'), h(async (req, res) => {
     }
     return { booking, newLogin };
   });
-  if (lead) await logLead(lead.id, req.user.id, 'stage', `Booked ${unit.unit_no} for ${inr(deal)}`);
-  await notify(req.user.org, null, 'booking', `${unit.unit_no} (${unit.project_name}) booked for ${inr(deal)} by ${req.user.name}`, `/bookings/${out.booking.id}`);
-  if (brokerId && brokerId !== req.user.id) await notify(req.user.org, brokerId, 'booking', `Your client ${custName} booked ${unit.unit_no}. Commission added.`, `/bookings/${out.booking.id}`);
+  if (lead) await logLead(lead.id, req.user.id, 'stage', `Booked ${bookedUnit.unit_no} for ${inr(deal)}`);
+  await notify(req.user.org, null, 'booking', `${bookedUnit.unit_no} (${bookedUnit.project_name}) booked for ${inr(deal)} by ${req.user.name}`, `/bookings/${out.booking.id}`);
+  if (brokerId && brokerId !== req.user.id) await notify(req.user.org, brokerId, 'booking', `Your client ${custName} booked ${bookedUnit.unit_no}. Commission added.`, `/bookings/${out.booking.id}`);
   res.json({ ...out.booking, customer_login: out.newLogin ? { email: custEmail, temp_password: temp } : null });
 }));
 
 r.patch('/bookings/:id', allow('admin', 'sales'), h(async (req, res) => {
   const { status, notes, handover_status, handover_docs, registry_checklist } = req.body || {};
-  const b = await one(`UPDATE bookings SET
-    status = COALESCE($3, status),
-    notes = COALESCE($4, notes),
-    handover_status = COALESCE($5, handover_status),
-    handover_docs = COALESCE($6, handover_docs),
-    registry_checklist = COALESCE($7, registry_checklist),
-    updated_at = now()
-    WHERE id = $1 AND org_id = $2 RETURNING *`,
-    [req.params.id, req.user.org, status, notes, handover_status, handover_docs ? JSON.stringify(handover_docs) : null, registry_checklist ? JSON.stringify(registry_checklist) : null]);
-  if (!b) throw fail(404, 'Booking not found');
-  if (status === 'cancelled') {
-    await q(`UPDATE units SET status = 'available', updated_at = now() WHERE id = $1`, [b.unit_id]);
-    await q(`UPDATE commissions SET status = 'void' WHERE booking_id = $1 AND status <> 'paid'`, [b.id]);
-  } else if (['registered', 'possession'].includes(status)) await q(`UPDATE units SET status = 'sold', updated_at = now() WHERE id = $1`, [b.unit_id]);
+  const validStatuses = ['booked', 'agreement', 'registered', 'possession', 'cancelled'];
+  if (status && !validStatuses.includes(status)) throw fail(400, 'Unknown booking status');
+  if (req.user.role === 'sales' && ['registered', 'possession', 'cancelled'].includes(status)) throw fail(403, 'Only an admin can register, hand over, or cancel a booking');
+  if (req.user.role !== 'admin' && (handover_status !== undefined || handover_docs !== undefined || registry_checklist !== undefined)) {
+    throw fail(403, 'Only an admin can update handover and registry records');
+  }
+  const b = await tx(async t => {
+    const found = await t.one(`SELECT unit_id FROM bookings WHERE id = $1 AND org_id = $2`, [req.params.id, req.user.org]);
+    if (!found) throw fail(404, 'Booking not found');
+    await t.one(`SELECT id FROM units WHERE id = $1 FOR UPDATE`, [found.unit_id]);
+    const cur = await t.one(`SELECT id, sold_by, unit_id, status FROM bookings WHERE id = $1 AND org_id = $2 FOR UPDATE`, [req.params.id, req.user.org]);
+    if (!cur) throw fail(404, 'Booking not found');
+    if (req.user.role === 'sales' && cur.sold_by !== req.user.id) throw fail(404, 'Booking not found');
+    if (cur.status === 'cancelled' && status && status !== 'cancelled') throw fail(409, 'A cancelled booking cannot be reactivated');
+    const updated = await t.one(`UPDATE bookings SET
+      status = COALESCE($3, status),
+      notes = COALESCE($4, notes),
+      handover_status = COALESCE($5, handover_status),
+      handover_docs = COALESCE($6, handover_docs),
+      registry_checklist = COALESCE($7, registry_checklist),
+      updated_at = now()
+      WHERE id = $1 AND org_id = $2 RETURNING *`,
+      [cur.id, req.user.org, status, notes, handover_status, handover_docs ? JSON.stringify(handover_docs) : null, registry_checklist ? JSON.stringify(registry_checklist) : null]);
+    if (status === 'cancelled' && cur.status !== 'cancelled') {
+      await t.q(`UPDATE units SET status = 'available', hold_by = NULL, hold_until = NULL, updated_at = now() WHERE id = $1`, [updated.unit_id]);
+      await t.q(`UPDATE commissions SET status = 'void' WHERE booking_id = $1 AND status <> 'paid'`, [updated.id]);
+    } else if (['registered', 'possession'].includes(status)) {
+      await t.q(`UPDATE units SET status = 'sold', updated_at = now() WHERE id = $1`, [updated.unit_id]);
+    }
+    return updated;
+  });
   res.json(b);
 }));
 
 r.post('/bookings/:id/payments', allow('admin'), h(async (req, res) => {
   const { amount, paid_on, mode, ref, milestone } = req.body || {};
-  if (!(Number(amount) > 0)) throw fail(400, 'Enter the amount received');
-  const b = await one(`SELECT id, customer_id FROM bookings WHERE id = $1 AND org_id = $2`, [req.params.id, req.user.org]);
-  if (!b) throw fail(404, 'Booking not found');
-  const p = await one(`INSERT INTO payments (booking_id, amount, paid_on, mode, ref, milestone) VALUES ($1,$2,COALESCE($3::date,current_date),$4,$5,$6) RETURNING *`, [b.id, amount, paid_on || null, mode, ref, milestone]);
-  if (b.customer_id) await notify(req.user.org, b.customer_id, 'payment', `Payment of ${inr(amount)} received. Thank you!`, '/portal');
+  const paymentAmount = number(amount, 'Payment amount', { min: 0.01, max: 1_000_000_000, optional: false });
+  const paidOn = paid_on ? dateValue(paid_on, 'Payment date', { optional: false }) : null;
+  if (mode !== undefined && mode !== null && mode !== '') oneOf(mode, 'Payment mode', ['NEFT', 'RTGS', 'Cheque', 'UPI', 'Home loan disbursal'], { optional: false });
+  if (ref !== undefined && (typeof ref !== 'string' || ref.length > 120)) throw fail(400, 'Payment reference must be at most 120 characters');
+  if (milestone !== undefined && (typeof milestone !== 'string' || milestone.length > 100)) throw fail(400, 'Milestone must be at most 100 characters');
+  const { b, p } = await tx(async t => {
+    const booking = await t.one(`SELECT id, customer_id, deal_value FROM bookings WHERE id = $1 AND org_id = $2 AND status <> 'cancelled' FOR UPDATE`, [req.params.id, req.user.org]);
+    if (!booking) throw fail(404, 'Booking not found');
+    const paid = await t.one(`SELECT COALESCE(sum(amount),0) AS total FROM payments WHERE booking_id = $1`, [booking.id]);
+    if (Number(paid.total) + paymentAmount > Number(booking.deal_value)) throw fail(400, 'Payment would exceed the remaining balance');
+    const payment = await t.one(`INSERT INTO payments (booking_id, amount, paid_on, mode, ref, milestone) VALUES ($1,$2,COALESCE($3::date,current_date),$4,$5,$6) RETURNING *`, [booking.id, paymentAmount, paidOn, mode || null, ref || null, milestone || null]);
+    return { b: booking, p: payment };
+  });
+  if (b.customer_id) await notify(req.user.org, b.customer_id, 'payment', `Payment of ${inr(paymentAmount)} received. Thank you!`, '/portal');
   res.json(p);
 }));
 

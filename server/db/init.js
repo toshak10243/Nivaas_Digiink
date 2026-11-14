@@ -1,2 +1,3 @@
-import './setup-db.js';
+import { ensureDatabaseSchema } from './setup-db.js';
 
+await ensureDatabaseSchema();

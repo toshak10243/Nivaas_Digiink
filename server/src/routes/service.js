@@ -4,7 +4,8 @@ import { one, many, q } from '../db.js';
 import { h, allow, fail } from '../lib/auth.js';
 import { settingsOf } from '../settings.js';
 import { notify } from '../services/notify.js';
-import { upload, fileUrl } from './projects.js';
+import { upload, verifyUploadedFiles, fileUrl } from './projects.js';
+import { oneOf } from '../lib/validate.js';
 
 const r = Router();
 export const CATEGORIES = ['seepage', 'plumbing', 'electrical', 'carpentry', 'paint', 'tiles', 'lift', 'parking', 'other'];
@@ -18,7 +19,7 @@ r.get('/portal', allow('customer', 'admin', 'sales'), h(async (req, res) => {
     whereClause += ` AND b.customer_id = $1`;
   } else if (req.user.role === 'sales') {
     vals.push(req.user.org, req.user.id);
-    whereClause += ` AND b.org_id = $1 AND (b.sold_by = $2 OR b.customer_id IS NOT NULL)`;
+    whereClause += ` AND b.org_id = $1 AND b.sold_by = $2`;
   } else {
     vals.push(req.user.org);
     whereClause += ` AND b.org_id = $1`;
@@ -85,13 +86,16 @@ r.get('/tickets/:id', h(async (req, res) => {
 }));
 
 /** Customer raises a complaint (with photos). Goes to the least-busy maintenance person + the sales agent + admins. */
-r.post('/tickets', upload.array('photos', 6), h(async (req, res) => {
+r.post('/tickets', allow('customer', 'admin', 'sales'), upload.array('photos', 6), verifyUploadedFiles, h(async (req, res) => {
   const { booking_id, category, title, description, priority = 'normal' } = req.body || {};
-  if (!title) throw fail(400, 'Tell us in a few words what the problem is');
+  if (typeof title !== 'string' || !title.trim() || title.length > 160) throw fail(400, 'Ticket title must be 1 to 160 characters');
+  if (description !== undefined && description !== null && (typeof description !== 'string' || description.length > 5000)) throw fail(400, 'Description must be at most 5,000 characters');
   if (!CATEGORIES.includes(category)) throw fail(400, 'Pick a category');
+  oneOf(priority, 'Ticket priority', ['low', 'normal', 'urgent'], { optional: false });
   const b = await one(`SELECT b.*, u.unit_no FROM bookings b JOIN units u ON u.id = b.unit_id WHERE b.id = $1 AND b.org_id = $2 ${req.user.role === 'customer' ? 'AND b.customer_id = $3' : ''}`,
     req.user.role === 'customer' ? [booking_id, req.user.org, req.user.id] : [booking_id, req.user.org]);
   if (!b) throw fail(404, 'Booking not found');
+  if (req.user.role === 'sales' && b.sold_by !== req.user.id) throw fail(404, 'Booking not found');
   const org = await one(`SELECT settings FROM orgs WHERE id = $1`, [req.user.org]);
   const sla = settingsOf(org).tickets;
   const hours = priority === 'urgent' ? sla.urgent_sla_hours : sla.sla_hours;
@@ -115,13 +119,24 @@ r.patch('/tickets/:id', allow('admin', 'maintenance', 'customer'), h(async (req,
   const { status, assigned_to, rating, priority } = req.body || {};
   if (req.user.role === 'customer') {
     if (t.customer_id !== req.user.id) throw fail(403, 'No access');
-    if (rating) { await q(`UPDATE tickets SET rating = $2, status = 'closed' WHERE id = $1`, [t.id, Math.max(1, Math.min(5, Number(rating)))]); return res.sendStatus(204); }
+    if (rating !== undefined) {
+      const score = Number(rating);
+      if (!Number.isInteger(score) || score < 1 || score > 5) throw fail(400, 'Rating must be from 1 to 5');
+      await q(`UPDATE tickets SET rating = $2, status = 'closed' WHERE id = $1`, [t.id, score]);
+      return res.sendStatus(204);
+    }
     if (status === 'open' && ['resolved', 'closed'].includes(t.status)) { // re-open
       await q(`UPDATE tickets SET status = 'open', resolved_at = NULL, sla_due_at = now() + interval '24 hours', sla_alerted = false WHERE id = $1`, [t.id]);
       if (t.assigned_to) await notify(req.user.org, t.assigned_to, 'ticket', `Customer re-opened ticket #${t.number}`, `/tickets/${t.id}`);
       return res.sendStatus(204);
     }
     throw fail(400, 'Nothing to change');
+  }
+  if (status && !['open', 'in_progress', 'resolved', 'closed'].includes(status)) throw fail(400, 'Unknown ticket status');
+  if (priority && !['low', 'normal', 'urgent'].includes(priority)) throw fail(400, 'Unknown ticket priority');
+  if (assigned_to) {
+    const assignee = await one(`SELECT id FROM users WHERE id = $1 AND org_id = $2 AND role = 'maintenance' AND active`, [assigned_to, req.user.org]);
+    if (!assignee) throw fail(400, 'Assignee must be an active maintenance user in this organization');
   }
   const row = await one(`UPDATE tickets SET status = COALESCE($2,status), assigned_to = COALESCE($3,assigned_to), priority = COALESCE($4,priority),
                            resolved_at = CASE WHEN $2 IN ('resolved','closed') THEN COALESCE(resolved_at, now()) ELSE resolved_at END WHERE id = $1 RETURNING *`,
@@ -137,9 +152,9 @@ r.patch('/tickets/:id', allow('admin', 'maintenance', 'customer'), h(async (req,
   res.json(row);
 }));
 
-r.post('/tickets/:id/comments', upload.array('photos', 6), h(async (req, res) => {
-  const t = await one(`SELECT * FROM tickets WHERE id = $1 AND org_id = $2`, [req.params.id, req.user.org]);
-  if (!t || (req.user.role === 'customer' && t.customer_id !== req.user.id)) throw fail(404, 'Ticket not found');
+r.post('/tickets/:id/comments', allow('admin', 'maintenance', 'customer', 'sales'), upload.array('photos', 6), verifyUploadedFiles, h(async (req, res) => {
+  const t = await one(`SELECT t.*, b.sold_by FROM tickets t LEFT JOIN bookings b ON b.id = t.booking_id WHERE t.id = $1 AND t.org_id = $2`, [req.params.id, req.user.org]);
+  if (!t || (req.user.role === 'customer' && t.customer_id !== req.user.id) || (req.user.role === 'sales' && t.sold_by !== req.user.id)) throw fail(404, 'Ticket not found');
   const body = String(req.body?.body || '').trim();
   if (!body && !(req.files || []).length) throw fail(400, 'Write a message or add a photo');
   const internal = req.user.role !== 'customer' && String(req.body.internal) === 'true';

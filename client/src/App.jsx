@@ -1,9 +1,10 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { api } from './api/index.js';
 import { Icon, Logo, Avatar, useLoad } from './components/ui.jsx';
 import { ago } from './lib/format.js';
 import Login from './pages/Login.jsx';
 import Dashboard from './pages/Dashboard.jsx';
+import Reports from './pages/Reports.jsx';
 import Projects from './pages/Projects.jsx';
 import Inventory from './pages/Inventory.jsx';
 import Leads from './pages/Leads.jsx';
@@ -24,13 +25,14 @@ const NAV = {
     ['projects', 'Projects', 'building'],
     ['inventory', 'Inventory', 'grid'],
     ['leads', 'Leads', 'funnel'],
-    ['visits', 'Site visits', 'calendar'],
+    ['visits', 'Site Visits', 'calendar'],
     ['chats', 'WhatsApp', 'chat'],
     ['bookings', 'Bookings', 'receipt'],
     ['portal', 'Buyer Handover', 'shield'],
     ['earnings', 'Payouts', 'rupee'],
     ['team', 'Team', 'users'],
     ['tickets', 'Complaints', 'wrench'],
+    ['reports', 'Reports', 'chart'],
     ['settings', 'Settings', 'gear']
   ],
   sales: [
@@ -73,6 +75,7 @@ const TITLES = {
   earnings: 'Payouts',
   team: 'Team',
   tickets: 'Complaints',
+  reports: 'Reports',
   settings: 'Settings'
 };
 const ROLE_LABEL = { admin: 'Builder admin', sales: 'Sales agent', broker: 'Channel partner', maintenance: 'Maintenance', customer: 'Home owner' };
@@ -88,6 +91,15 @@ export default function App() {
   const [toast, setToast] = useState('');
   const [sess, setSess] = useState(0);
   useEffect(() => { const f = () => setRoute(parse()); window.addEventListener('hashchange', f); return () => window.removeEventListener('hashchange', f); }, []);
+  useEffect(() => {
+    const onSessionExpired = () => {
+      setAuthed(false);
+      setRoute([]);
+      if (location.hash) location.hash = '';
+    };
+    window.addEventListener('nivaas:session-expired', onSessionExpired);
+    return () => window.removeEventListener('nivaas:session-expired', onSessionExpired);
+  }, []);
   const go = useCallback(path => { location.hash = '#/' + path.replace(/^\//, ''); }, []);
   const say = useCallback(t => { setToast(t); clearTimeout(say.t); say.t = setTimeout(() => setToast(''), 3200); }, []);
 
@@ -102,22 +114,27 @@ function Shell({ route, go, say, toast, onLogout, onSwitchRole }) {
   const [notifs, reloadN] = useLoad(() => api.get('/api/notifications'), []);
   const [bell, setBell] = useState(false);
   const [showEmi, setShowEmi] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   useEffect(() => { const t = setInterval(reloadN, 30000); return () => clearInterval(t); }, [reloadN]);
   if (!me) return <div className="boot"><Logo size={44} /></div>;
   const role = me.user.role;
   const nav = NAV[role];
   const page = nav.some(n => n[0] === route[0]) ? route[0] : nav[0][0];
+  const adminWorkspace = role === 'admin';
+  const executiveDashboard = role === 'admin' && page === 'dashboard';
   const unread = (notifs || []).filter(n => !n.read).length;
   const props = { me, go, say, params: route.slice(1), reloadMe };
   const theme = () => { const r = document.documentElement; const dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches; r.dataset.theme = dark ? 'light' : 'dark'; };
 
   return (
-    <div className="shell">
+    <div className={'shell' + (adminWorkspace ? ' nivaas-admin-shell' : '') + (executiveDashboard ? ' admin-dashboard-shell' : '') + (sidebarOpen ? ' sidebar-open' : '')}>
       <nav className="rail" aria-label="Main">
-        <div className="brand"><Logo /><div><b>Nivaas</b><small>{me.org.name}</small></div></div>
+        <div className="brand"><Logo /><div><b>Nivaas</b><small>{adminWorkspace ? 'Real Estate CRM' : me.org.name}</small></div></div>
+        {adminWorkspace && <button className="mobile-sidebar-close" aria-label="Close navigation" onClick={() => setSidebarOpen(false)}><Icon name="x" /></button>}
         <div className="navlist">
           {nav.map(([k, l, ic]) => (
-            <button key={k} className="navbtn" aria-current={page === k ? 'page' : undefined} onClick={() => go(k)}><Icon name={ic} /><span>{l}</span></button>
+            <button key={k} className="navbtn" aria-current={page === k ? 'page' : undefined} onClick={() => { setSidebarOpen(false); go(k); }}><Icon name={ic} /><span>{l}</span></button>
           ))}
         </div>
         <div className="railfoot">
@@ -127,21 +144,25 @@ function Shell({ route, go, say, toast, onLogout, onSwitchRole }) {
       </nav>
       <main className="work">
         <header className="topbar">
-          <div style={{ minWidth: 0 }}><h1>{TITLES[page]}</h1></div>
-          <div className="spacer" />
-          {api.mode === 'demo' && <DemoSwitch role={role} onSwitch={onSwitchRole} />}
-          <button className="iconbtn" onClick={() => setShowEmi(true)} title="Home Loan EMI Calculator" aria-label="Home Loan EMI Calculator"><Icon name="calc" /></button>
-          <button className="iconbtn" onClick={theme} aria-label="Switch theme"><Icon name="moon" /></button>
+          {adminWorkspace && <button className="iconbtn dashboard-menu-button" aria-label="Open navigation" aria-expanded={sidebarOpen} onClick={() => setSidebarOpen(value => !value)}><Icon name="menu" /></button>}
+          <div style={{ minWidth: 0 }}><h1>{TITLES[page]}</h1></div><div className="spacer" />
+          {adminWorkspace ? <DashboardSearch go={go} /> : api.mode === 'demo' && <DemoSwitch role={role} onSwitch={onSwitchRole} />}
+          {!adminWorkspace && <button className="iconbtn" onClick={() => setShowEmi(true)} title="Home Loan EMI Calculator" aria-label="Home Loan EMI Calculator"><Icon name="calc" /></button>}
+          {!adminWorkspace && <button className="iconbtn" onClick={theme} aria-label="Switch theme"><Icon name="moon" /></button>}
           <div style={{ position: 'relative' }}>
             <button className="iconbtn" aria-label="Notifications" onClick={() => { setBell(b => !b); if (!bell && unread) api.post('/api/notifications/read').then(reloadN); }}>
               <Icon name="bell" />{unread > 0 && <span className="dot" />}
             </button>
             {bell && <Bell list={notifs || []} onPick={n => { setBell(false); if (n.link) go(n.link.replace(/^\//, '').replace('share', 'inventory')); }} />}
           </div>
-          <button className="iconbtn" aria-label="Log out" onClick={onLogout}><Icon name="logout" /></button>
+          {adminWorkspace ? <div className="profile-menu-wrap">
+            <button className="dashboard-profile-button" aria-label="Open profile menu" aria-expanded={profileOpen} onClick={() => setProfileOpen(value => !value)}><Avatar name={me.user.name} size="sm" /><Icon name="chevronDown" /></button>
+            {profileOpen && <div className="dashboard-profile-menu"><b>{me.user.name}</b><small>{ROLE_LABEL[role]}</small>{api.mode === 'demo' && <label className="profile-role-switch">View as <select value={role} onChange={event => onSwitchRole(event.target.value)}><option value="admin">Builder admin</option><option value="sales">Sales agent</option><option value="broker">Broker</option><option value="maintenance">Maintenance</option><option value="customer">Home owner</option></select></label>}<button onClick={() => { setProfileOpen(false); setShowEmi(true); }}><Icon name="calc" />Home loan calculator</button><button onClick={() => { setProfileOpen(false); theme(); }}><Icon name="moon" />Switch appearance</button><button className="profile-logout" onClick={onLogout}><Icon name="logout" />Log out</button></div>}
+          </div> : <button className="iconbtn" aria-label="Log out" onClick={onLogout}><Icon name="logout" /></button>}
         </header>
         <div className="content" key={page + route.join('/')}>
           {page === 'dashboard' && <Dashboard {...props} />}
+          {page === 'reports' && <Reports {...props} />}
           {page === 'projects' && <Projects {...props} />}
           {page === 'inventory' && <Inventory {...props} />}
           {page === 'leads' && <Leads {...props} />}
@@ -199,4 +220,45 @@ function Bell({ list, onPick }) {
       </div>
     </div>
   );
+}
+
+function DashboardSearch({ go }) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  const [open, setOpen] = useState(false);
+  const input = useRef(null);
+  useEffect(() => {
+    const shortcut = event => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        input.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', shortcut);
+    return () => window.removeEventListener('keydown', shortcut);
+  }, []);
+  useEffect(() => {
+    const term = query.trim();
+    if (term.length < 2) { setResults([]); return undefined; }
+    const timer = setTimeout(async () => {
+      const [leadsResult, bookingsResult] = await Promise.allSettled([
+        api.get('/api/leads?q=' + encodeURIComponent(term)), api.get('/api/bookings'),
+      ]);
+      const found = [];
+      if (leadsResult.status === 'fulfilled' && Array.isArray(leadsResult.value)) {
+        found.push(...leadsResult.value.slice(0, 5).map(item => ({ id: item.id, title: item.name || item.phone, detail: 'Lead · ' + (item.project_name || 'No project'), route: 'leads/' + item.id })));
+      }
+      if (bookingsResult.status === 'fulfilled' && Array.isArray(bookingsResult.value)) {
+        const matching = bookingsResult.value.filter(item => [item.customer_name, item.customer_phone, item.unit_no, item.project_name].some(value => String(value || '').toLowerCase().includes(term.toLowerCase())));
+        found.push(...matching.slice(0, 5).map(item => ({ id: item.id, title: item.customer_name || item.unit_no, detail: 'Booking · ' + item.unit_no + ' · ' + item.project_name, route: 'bookings/' + item.id })));
+      }
+      setResults(found.slice(0, 7));
+    }, 220);
+    return () => clearTimeout(timer);
+  }, [query]);
+  const choose = result => { setOpen(false); setQuery(''); go(result.route); };
+  return <div className="dashboard-search-wrap">
+    <label className="dashboard-search"><Icon name="search" /><input ref={input} value={query} onChange={event => { setQuery(event.target.value); setOpen(true); }} onFocus={() => setOpen(true)} onKeyDown={event => { if (event.key === 'Enter' && results[0]) choose(results[0]); if (event.key === 'Escape') setOpen(false); }} placeholder="Search leads, bookings, buyers..." aria-label="Search leads, bookings, and buyers" /><kbd>Ctrl K</kbd></label>
+    {open && query.trim().length >= 2 && <div className="dashboard-search-results">{results.length ? results.map(result => <button key={result.route} onMouseDown={event => event.preventDefault()} onClick={() => choose(result)}><b>{result.title}</b><small>{result.detail}</small></button>) : <span>No matching leads or bookings found.</span>}</div>}
+  </div>;
 }

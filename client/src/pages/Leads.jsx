@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { api } from '../api/index.js';
 import { Icon, Avatar, Pill, Drawer, Modal, Seg, Field, useLoad, Loading, Empty } from '../components/ui.jsx';
 import { STAGES, stageLabel, SOURCES, ago, dateTime, phone, money } from '../lib/format.js';
@@ -15,15 +15,10 @@ export default function Leads({ me, say, go, params }) {
   const [team] = useLoad(() => (role === 'admin' ? api.get('/api/team') : Promise.resolve([])), [role]);
   const [projects] = useLoad(() => api.get('/api/projects'), []);
   const [adding, setAdding] = useState(false);
-  const [selected, setSelected] = useState([]);
-  const [bulk, setBulk] = useState('');
-  const [bulkValue, setBulkValue] = useState('');
-  const [working, setWorking] = useState(false);
-  const [message, setMessage] = useState('');
-  const [messageResult, setMessageResult] = useState(null);
-  const [prefs, setPrefs] = useState([]);
-  useEffect(() => { setSelected([]); setMessageResult(null); }, [q, temp, followFilter, who, view, prefs]);
-  useEffect(() => { if (leads) setSelected(ids => ids.filter(id => leads.some(l => l.id === id))); }, [leads]);
+  const [selected, setSelected] = useState(new Set());
+  const [bulkModal, setBulkModal] = useState(null);
+  const [pendingBulkAction, setPendingBulkAction] = useState(null);
+  const [busyBulk, setBusyBulk] = useState(false);
   const openId = params[0];
   if (!leads) return <div className="page"><Loading /></div>;
 
@@ -32,7 +27,6 @@ export default function Leads({ me, say, go, params }) {
   const isFuture = d => d && new Date(d) > new Date() && !isToday(d);
 
   const shown = leads.filter(l => {
-    if (prefs.length && !prefs.every(p => (l.preferences || []).includes(p) || (['1 BHK','2 BHK','3 BHK','4 BHK'].includes(p) && (l.config_pref || '').includes(p)))) return false;
     if (temp !== 'all' && l.temperature !== temp) return false;
     if (who !== 'all' && (who === 'none' ? !!l.assigned_to : l.assigned_to !== who)) return false;
     if (followFilter === 'today' && !isToday(l.followup_at)) return false;
@@ -42,28 +36,44 @@ export default function Leads({ me, say, go, params }) {
     return true;
   });
   const sellers = (team || []).filter(u => ['sales', 'broker'].includes(u.role));
-  const toggle = id => setSelected(ids => ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id]);
-  const applyBulk = async () => {
-    if (!bulk || !selected.length || working) return;
-    if (bulk === 'email') {
-      const recipients = leads.filter(l => selected.includes(l.id)).map(l => l.email).filter(email => typeof email === 'string' && /^[^\s@<>;,]+@[^\s@<>;,]+\.[^\s@<>;,]+$/.test(email));
-      if (!recipients.length) { say('Selected leads do not have valid email addresses.'); return; }
-      window.location.href = `mailto:?bcc=${encodeURIComponent([...new Set(recipients)].join(','))}&body=${encodeURIComponent(message)}`;
-      say(`Email draft opened for ${recipients.length} of ${selected.length} leads. Review and send in your email app.`); return;
-    }
-    if (bulk === 'message' && !window.confirm(`Send this WhatsApp message to ${selected.length} selected leads?`)) return;
-    if (bulk === 'delete' && !window.confirm(`Permanently delete ${selected.length} selected leads and their chats, visits and activity? This cannot be undone.`)) return;
-    setWorking(true);
+
+  const allVisibleIds = shown.map(l => l.id);
+  const isAllSelected = shown.length > 0 && allVisibleIds.every(id => selected.has(id));
+  const toggleSelectAll = () => setSelected(isAllSelected ? new Set() : new Set(allVisibleIds));
+  const toggleOne = id => setSelected(current => {
+    const next = new Set(current);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+  const clearSelection = () => setSelected(new Set());
+
+  const runBulk = async (action, successMessage) => {
+    const ids = [...selected];
+    setBusyBulk(true);
     try {
-      if (bulk === 'message') {
-        const result = await api.post('/api/leads/bulk-message', { ids: selected, text: message });
-        setMessageResult(result); setSelected(result.failed.map(x => x.id));
-        say(`${result.sent.length} sent; ${result.failed.length} not sent`); await reload(); return;
-      }
-      await api.post('/api/leads/bulk', { ids: selected, action: bulk, value: bulkValue });
-      say(`${selected.length} leads updated`); setSelected([]); setBulk(''); setBulkValue(''); await reload();
-    } catch (e) { say(e.message); }
-    finally { setWorking(false); }
+      await Promise.all(ids.map(action));
+      say(successMessage(ids.length));
+      clearSelection();
+      setPendingBulkAction(null);
+      reload();
+      return true;
+    } catch (e) {
+      say(e.message || 'Some lead updates could not be completed');
+      reload();
+      return false;
+    } finally {
+      setBusyBulk(false);
+    }
+  };
+  const confirmBulkAction = () => {
+    if (!pendingBulkAction) return;
+    const { type, value } = pendingBulkAction;
+    if (type === 'assign') return runBulk(id => api.post('/api/leads/' + id + '/assign', { user_id: value }), count => `Assigned ${count} leads`);
+    if (type === 'stage') return runBulk(id => api.patch('/api/leads/' + id, { stage: value }), count => `Updated stage for ${count} leads`);
+    if (type === 'temperature') return runBulk(id => api.patch('/api/leads/' + id, { temperature: value }), count => `Updated temperature for ${count} leads`);
+  };
+  const handleBulkDelete = async () => {
+    if (await runBulk(id => api.del('/api/leads/' + id), count => `Deleted ${count} leads`)) setBulkModal(null);
   };
 
   return (
@@ -83,23 +93,17 @@ export default function Leads({ me, say, go, params }) {
         <label className="search" style={{ flex: '1 1 200px', maxWidth: 260 }}><Icon name="search" /><span className="sr">Search</span><input placeholder="Name, phone or unit" value={q} onChange={e => setQ(e.target.value)} /></label>
       </div>
 
-      <details className="crm-checklist"><summary>Filter by customer preferences</summary><div className="crm-check-options">{['1 BHK','2 BHK','3 BHK','4 BHK','Parking','Home loan','Ready to move'].map(option => <label className="crm-check" key={option}><input type="checkbox" checked={prefs.includes(option)} onChange={e => setPrefs(p => e.target.checked ? [...p,option] : p.filter(x => x !== option))} />{option}</label>)}{prefs.length > 0 && <button className="linkbtn" onClick={() => setPrefs([])}>Clear preferences</button>}</div></details>
-      {messageResult && <div className="note" role="status">WhatsApp: {messageResult.sent.length} sent, {messageResult.failed.length} not sent.{messageResult.failed.length > 0 && <ul>{messageResult.failed.map(f => <li key={f.id}>{leads.find(l => l.id === f.id)?.name || 'Lead'}: {f.reason}</li>)}</ul>}</div>}
-      {view === 'list' && selected.length > 0 && <div className="bulkbar" role="region" aria-label="Bulk lead actions" aria-busy={working}>
-        <b aria-live="polite">{selected.length} selected</b>
-        <select className="select" aria-label="Bulk action" value={bulk} disabled={working} onChange={e => { setBulk(e.target.value); setBulkValue(''); }}>
-          <option value="">Choose action</option><option value="stage">Change stage</option><option value="complete">Complete follow-ups</option>
-          {role !== 'broker' && <option value="message">Send WhatsApp message</option>}
-          <option value="email">Compose email</option>
-          {role === 'admin' && <><option value="assign">Transfer to agent</option><option value="delete">Delete leads</option></>}
-        </select>
-        {bulk === 'stage' && <select className="select" aria-label="New stage" value={bulkValue} disabled={working} onChange={e => setBulkValue(e.target.value)}><option value="">Select stage</option>{STAGES.map(([k,v]) => <option key={k} value={k}>{v}</option>)}</select>}
-        {bulk === 'assign' && <select className="select" aria-label="Transfer selected leads to" value={bulkValue} disabled={working} onChange={e => setBulkValue(e.target.value)}><option value="">Select agent</option>{sellers.filter(u => u.active !== false).map(u => <option key={u.id} value={u.id}>{u.name}</option>)}</select>}
-        {bulk === 'message' && <div style={{ flexBasis:'100%' }}><textarea className="input" aria-label="Bulk WhatsApp message" placeholder="Message for selected customers" maxLength={4000} value={message} disabled={working} onChange={e => setMessage(e.target.value)} /><p className="muted">Up to 50 leads. Only connected conversations with a customer reply in the last 24 hours can receive this message.</p></div>}
-        {bulk === 'email' && <div style={{ flexBasis:'100%' }}><textarea className="input" aria-label="Bulk email body" placeholder="Email body" maxLength={4000} value={message} onChange={e => setMessage(e.target.value)} /><p className="muted">Opens your email app with BCC recipients. Leads without an email address are skipped.</p></div>}
-        <button className="btn sun" disabled={working || !bulk || (['stage','assign'].includes(bulk) && !bulkValue) || (bulk === 'message' && (!message.trim() || selected.length > 50))} onClick={applyBulk}>{working ? 'Updating...' : bulk === 'message' ? 'Send message' : 'Apply'}</button>
-        <button className="btn" disabled={working} onClick={() => setSelected([])}>Clear selection</button>
+      {view === 'list' && selected.size > 0 && <div className="bulk-actions-toolbar" role="region" aria-label="Bulk lead actions">
+        <div className="bulk-left"><span className="bulk-badge">{selected.size} selected</span><span className="bulk-hint">Choose an action, then confirm it.</span><button className="linkbtn" onClick={() => { clearSelection(); setPendingBulkAction(null); }}>Clear selection</button></div>
+        <div className="bulk-actions">
+          {role === 'admin' && <label className="bulk-action-item"><span className="sr">Assign selected leads</span><select className="select" value={pendingBulkAction?.type === 'assign' ? pendingBulkAction.value : ''} onChange={e => setPendingBulkAction({ type: 'assign', value: e.target.value })} disabled={busyBulk} aria-label="Choose an assignee"><option value="" disabled>Assign to…</option>{sellers.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}</select></label>}
+          <label className="bulk-action-item"><span className="sr">Update selected lead stage</span><select className="select" value={pendingBulkAction?.type === 'stage' ? pendingBulkAction.value : ''} onChange={e => setPendingBulkAction({ type: 'stage', value: e.target.value })} disabled={busyBulk} aria-label="Choose a lead stage"><option value="" disabled>Set stage…</option>{STAGES.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
+          <div className="bulk-temp-group" aria-label="Prepare temperature change">{['hot', 'warm', 'cold'].map(value => <button type="button" className={'chipbtn' + (pendingBulkAction?.type === 'temperature' && pendingBulkAction.value === value ? ' active' : '')} key={value} disabled={busyBulk} onClick={() => setPendingBulkAction({ type: 'temperature', value })}>{value[0].toUpperCase() + value.slice(1)}</button>)}</div>
+          {pendingBulkAction && <button type="button" className="btn sun bulk-confirm-btn" disabled={busyBulk} onClick={confirmBulkAction}>{busyBulk ? 'Applying…' : pendingBulkAction.type === 'assign' ? 'Confirm assignment' : pendingBulkAction.type === 'stage' ? 'Confirm stage update' : 'Confirm temperature'}</button>}
+          {(role === 'admin' || role === 'sales') && <button type="button" className="btn danger-btn" disabled={busyBulk} onClick={() => setBulkModal('delete')}>Delete</button>}
+        </div>
       </div>}
+
       {shown.length === 0 ? <Empty icon="funnel" title="No leads here yet" /> : view === 'board' ? (
         <div className="board">
           {STAGES.map(([k, l]) => {
@@ -114,11 +118,10 @@ export default function Leads({ me, say, go, params }) {
         </div>
       ) : (
         <div className="card tablewrap"><table>
-          <thead><tr><th className="checkcell"><input ref={el => { if (el) el.indeterminate = selected.length > 0 && !shown.every(l => selected.includes(l.id)); }} type="checkbox" aria-label="Select all visible leads" checked={shown.length > 0 && shown.every(l => selected.includes(l.id))} disabled={working} onChange={e => setSelected(e.target.checked ? shown.map(l => l.id) : [])} /></th><th>Name</th><th>Phone</th><th>Stage</th><th>Interest</th><th>Budget</th><th>Source</th>{role === 'admin' && <th>Owner</th>}<th>Next visit</th><th>Updated</th></tr></thead>
+          <thead><tr><th className="lead-select-cell"><input className="crm-checkbox" type="checkbox" checked={isAllSelected} ref={el => { if (el) el.indeterminate = selected.size > 0 && !isAllSelected; }} onChange={toggleSelectAll} aria-label="Select all visible leads" /></th><th>Name</th><th>Phone</th><th>Stage</th><th>Interest</th><th>Budget</th><th>Source</th>{role === 'admin' && <th>Owner</th>}<th>Next visit</th><th>Updated</th></tr></thead>
           <tbody>{shown.map(l => (
-            <tr key={l.id} className={selected.includes(l.id) ? 'lead-selected' : ''} onClick={() => go('leads/' + l.id)}>
-              <td className="checkcell" onClick={e => e.stopPropagation()}><input type="checkbox" aria-label={`Select ${l.name || l.phone}`} checked={selected.includes(l.id)} disabled={working} onChange={() => toggle(l.id)} /></td>
-              <td><div className="who"><span className={'tdot ' + l.temperature} /><b>{l.name || '—'}</b></div></td><td className="mono" style={{ fontSize: 13 }}>{phone(l.phone)}</td>
+            <tr key={l.id} className={selected.has(l.id) ? 'row-selected' : ''} onClick={() => go('leads/' + l.id)}>
+              <td className="lead-select-cell" onClick={e => e.stopPropagation()}><input className="crm-checkbox" type="checkbox" checked={selected.has(l.id)} onChange={() => toggleOne(l.id)} aria-label={`Select ${l.name || phone(l.phone)}`} /></td><td><div className="who"><span className={'tdot ' + l.temperature} /><b>{l.name || '—'}</b></div></td><td className="mono" style={{ fontSize: 13 }}>{phone(l.phone)}</td>
               <td>{stageLabel(l.stage)}</td><td>{[l.config_pref, l.unit_no, l.project_name].filter(Boolean).join(' · ')}</td><td>{l.budget || '—'}</td><td>{SOURCES[l.source] || l.source}{l.broker_name ? ` · ${l.broker_name}` : ''}</td>
               {role === 'admin' && <td>{l.assigned_name || <span className="pill hot">Unassigned</span>}</td>}<td>{l.next_visit ? dateTime(l.next_visit) : '—'}</td><td className="time">{ago(l.updated_at)}</td>
             </tr>))}</tbody>
@@ -127,6 +130,7 @@ export default function Leads({ me, say, go, params }) {
 
       {openId && <LeadDrawer id={openId} me={me} say={say} go={go} sellers={sellers} projects={projects || []} onClose={() => go('leads')} onChange={reload} />}
       {adding && <AddLead me={me} projects={projects || []} say={say} onClose={() => setAdding(false)} onDone={l => { setAdding(false); reload(); go('leads/' + l.id); }} />}
+      {bulkModal === 'delete' && <Modal title={`Delete ${selected.size} leads?`} onClose={() => !busyBulk && setBulkModal(null)} footer={<><button className="btn" disabled={busyBulk} onClick={() => setBulkModal(null)}>Cancel</button><button className="btn danger-btn" disabled={busyBulk} onClick={handleBulkDelete}>{busyBulk ? 'Deleting…' : 'Delete leads'}</button></>}><p>This permanently deletes the selected lead records. This action cannot be undone.</p></Modal>}
     </div>
   );
 }
@@ -167,16 +171,8 @@ function LeadDrawer({ id, me, say, go, sellers, projects, onClose, onChange }) {
   const [fDate, setFDate] = useState('');
   const [fType, setFType] = useState('call');
   const [fNote, setFNote] = useState('');
-  const [savingChecks, setSavingChecks] = useState(false);
-  if (!l) return <Drawer title="Loading…" onClose={onClose}><Loading /></Drawer>;
+  if (!l) return <Drawer title="Loading”¦" onClose={onClose}><Loading /></Drawer>;
   const refresh = () => { reload(); onChange(); };
-  const saveChecks = async body => {
-    if (savingChecks) return;
-    setSavingChecks(true);
-    try { await api.patch('/api/leads/' + l.id, body); await reload(); onChange(); }
-    catch (e) { say(e.message); }
-    finally { setSavingChecks(false); }
-  };
   const patch = async b => { try { await api.patch('/api/leads/' + l.id, b); refresh(); } catch (e) { say(e.message); } };
   const assign = async user_id => { try { const r = await api.post(`/api/leads/${l.id}/assign`, { user_id: user_id || null }); say(`Assigned to ${r.name}`); refresh(); } catch (e) { say(e.message); } };
   const addEvent = async kind => { if (!note.trim()) return; await api.post(`/api/leads/${l.id}/events`, { kind, body: note }); setNote(''); refresh(); };
@@ -192,6 +188,16 @@ function LeadDrawer({ id, me, say, go, sellers, projects, onClose, onChange }) {
       say('Follow-up reminder set');
       setFDate('');
       setFNote('');
+    } catch (e) {
+      say(e.message);
+    }
+  };
+
+  const clearFollowup = async () => {
+    try {
+      await patch({ followup_at: null, followup_type: null, followup_note: null });
+      await api.post(`/api/leads/${l.id}/events`, { kind: 'note', body: 'Follow-up marked completed' });
+      say('Follow-up marked completed');
     } catch (e) {
       say(e.message);
     }
@@ -273,12 +279,12 @@ function LeadDrawer({ id, me, say, go, sellers, projects, onClose, onChange }) {
           <div>
             <div style={{ fontSize: 13, color: 'var(--ink)' }}>
               <b>{dateTime(l.followup_at)}</b> · <span style={{ textTransform: 'capitalize' }}>{l.followup_type || 'Call'}</span>
-              {l.followup_note && <span className="muted"> — “{l.followup_note}”</span>}
+              {l.followup_note && <span className="muted"> — “{l.followup_note}”</span>}
             </div>
             <div className="followup-actions">
               <a className="btn sm sun" href={`tel:+${String(l.phone).replace(/\D/g, '')}`}><Icon name="phone" />Call Now</a>
               <a className="btn sm wa-btn" href={`https://wa.me/${String(l.phone).replace(/\D/g, '')}?text=${encodeURIComponent(`Namaste ${l.name?.split(' ')[0] || ''}! Following up as discussed regarding our property.`)}`} target="_blank" rel="noreferrer"><Icon name="wa" />WhatsApp</a>
-              <label className="crm-check"><input type="checkbox" checked={false} disabled={savingChecks} onChange={() => saveChecks({ followup_at: null, followup_type: null, followup_note: null })} />Mark follow-up completed</label>
+              <button className="btn sm" onClick={clearFollowup}><Icon name="checkCircle" />Mark Done</button>
             </div>
           </div>
         ) : (
@@ -310,15 +316,6 @@ function LeadDrawer({ id, me, say, go, sellers, projects, onClose, onChange }) {
         </div>
       </div>
 
-      <fieldset className="crm-checklist" disabled={savingChecks}>
-        <legend>Customer preferences</legend>
-        <div className="crm-check-options">{['1 BHK','2 BHK','3 BHK','4 BHK','Parking','Home loan','Ready to move'].map(option => <label className="crm-check" key={option}><input type="checkbox" checked={(l.preferences || []).includes(option)} onChange={e => saveChecks({ preferences: e.target.checked ? [...(l.preferences || []), option] : (l.preferences || []).filter(x => x !== option) })} />{option}</label>)}</div>
-      </fieldset>
-      <fieldset className="crm-checklist" disabled={savingChecks}>
-        <legend>Tasks & document checklist</legend>
-        <p className="muted">Tick completed tasks and received documents. Unticked items are pending.</p>
-        <div className="crm-check-options">{[['call_done','Client call completed'],['visit_done','Site visit completed'],['documents_sent','Property documents sent'],['pan_received','PAN received'],['aadhaar_received','Aadhaar received'],['booking_form','Booking form received'],['agreement_signed','Agreement signed']].map(([key,label]) => <label className="crm-check" key={key}><input type="checkbox" checked={!!l.checklist?.[key]} onChange={e => saveChecks({ checklist: { ...(l.checklist || {}), [key]: e.target.checked } })} />{label}</label>)}</div>
-      </fieldset>
       {/* Feature 7: AI Buyer Objection Resolver */}
       <AiObjectionCard l={l} say={say} />
 
@@ -398,8 +395,8 @@ function VisitRow({ v, say, onDone }) {
       <span style={{ flex: 1, minWidth: 160 }}>
         {dateTime(v.scheduled_at)}{v.agent ? ` · ${v.agent}` : ''}
         {v.visitors_count > 1 ? ` · 👥 ${v.visitors_count} visitors` : ''}
-        {v.transport === 'cab' ? ' · 🚖 Cab' : ''}
-        {v.feedback ? ` · “${v.feedback}”` : ''}
+        {v.transport === 'cab' ? ' · 🚕 Cab' : ''}
+        {v.feedback ? ` · “${v.feedback}”` : ''}
         {v.rating ? ` · ★${v.rating}/5` : ''}
       </span>
       <Pill s={v.status} />
@@ -429,7 +426,7 @@ function AddLead({ me, projects, say, onClose, onDone }) {
   const set = k => e => setF({ ...f, [k]: e.target.value });
   const submit = async () => { setBusy(true); try { const l = await api.post('/api/leads', f); say(me.user.role === 'broker' ? 'Client registered and protected for you' : 'Lead added'); onDone(l); } catch (e) { say(e.message); } setBusy(false); };
   return (
-    <Modal title={me.user.role === 'broker' ? 'Register a client' : 'Add a lead'} onClose={onClose} footer={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn sun" disabled={busy || !f.name || f.phone.replace(/\D/g, '').length < 10} onClick={submit}>{busy ? 'Saving…' : 'Save'}</button></>}>
+    <Modal title={me.user.role === 'broker' ? 'Register a client' : 'Add a lead'} onClose={onClose} footer={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn sun" disabled={busy || !f.name || f.phone.replace(/\D/g, '').length < 10} onClick={submit}>{busy ? 'Saving”¦' : 'Save'}</button></>}>
       <div className="kgrid">
         <Field label="Name" id="al-n"><input id="al-n" className="input" value={f.name} onChange={set('name')} /></Field>
         <Field label="Mobile" id="al-p"><input id="al-p" className="input" inputMode="tel" value={f.phone} onChange={set('phone')} placeholder="98290 12345" /></Field>
@@ -526,7 +523,7 @@ function AiObjectionCard({ l, say }) {
           <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
             <input className="input" placeholder="Or type customer objection..." value={custom} onChange={e => setCustom(e.target.value)} onKeyDown={e => e.key === 'Enter' && solve()} />
             <button className="btn sun" disabled={busy || !custom.trim()} onClick={() => solve()}>
-              {busy ? 'Solving…' : 'Resolve'}
+              {busy ? 'Solving”¦' : 'Resolve'}
             </button>
           </div>
 
@@ -560,7 +557,7 @@ function AiObjectionCard({ l, say }) {
                     onClick={() => setActiveTab('wa')}
                   >
                     <Icon name="wa" style={{ width: 12, height: 12 }} />
-                    WhatsApp Ready
+                    WhatsApp Draft
                   </button>
                 </div>
                 <div style={{ display: 'flex', gap: 6 }}>
@@ -571,6 +568,10 @@ function AiObjectionCard({ l, say }) {
                     <Icon name="wa" />Send WhatsApp
                   </button>
                 </div>
+              </div>
+
+              <div className="note" role="note" style={{ marginBottom: 10, fontSize: 12 }}>
+                <b>Draft — review before sharing.</b> {result.reviewNotice || 'Confirm factual and commercial details against an approved source.'}
               </div>
 
               <div style={{
@@ -591,12 +592,12 @@ function AiObjectionCard({ l, say }) {
                 <div style={{ fontSize: 12, color: 'var(--ink-2)', borderTop: '1px solid var(--line)', paddingTop: 10 }}>
                   <b style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, textTransform: 'uppercase', fontSize: 11, letterSpacing: '.04em', color: '#10b981' }}>
                     <Icon name="check" style={{ width: 13, height: 13 }} />
-                    Verified Project Facts:
+                    Project record details (confirm before quoting):
                   </b>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 4, paddingLeft: 6 }}>
                     {factsList.map((f, i) => (
                       <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
-                        <span style={{ color: '#10b981', fontWeight: 'bold' }}>•</span>
+                        <span style={{ color: '#10b981', fontWeight: 'bold' }}>”¢</span>
                         <span>{typeof f === 'string' ? f : JSON.stringify(f)}</span>
                       </div>
                     ))}
@@ -625,7 +626,7 @@ function AiHandoverCard({ l, sellers, say, refresh }) {
         reason: 'Sales team handover / Staff vacation'
       });
       setMemo(res);
-      say('Handover dossier generated');
+      say('Handover draft generated');
       refresh();
     } catch (e) {
       say(e.message);
@@ -638,11 +639,11 @@ function AiHandoverCard({ l, sellers, say, refresh }) {
 
   const copyMemo = () => {
     const textToCopy = memoObj
-      ? `EXECUTIVE CLIENT BRIEFING DOSSIER\n\nClient: ${l.name} (${l.phone})\nSummary:\n${memoObj.summary || ''}\n\nKey Interest: ${memoObj.keyInterest || '—'}\nOffered Price: ${memoObj.offeredPrice || '—'}\n\nCritical Notes:\n${Array.isArray(memoObj.criticalNotes) ? memoObj.criticalNotes.map(n => '• ' + n).join('\n') : ''}\n\nRecommended Action:\n${memoObj.recommendedAction || '—'}`
+      ? `EXECUTIVE CLIENT BRIEFING DOSSIER\n\nClient: ${l.name} (${l.phone})\nSummary:\n${memoObj.summary || ''}\n\nKey Interest: ${memoObj.keyInterest || '—'}\nOffered Price: ${memoObj.offeredPrice || '—'}\n\nCritical Notes:\n${Array.isArray(memoObj.criticalNotes) ? memoObj.criticalNotes.map(n => '”¢ ' + n).join('\n') : ''}\n\nRecommended Action:\n${memoObj.recommendedAction || '—'}`
       : String(memoText || '');
     if (!textToCopy) return;
     navigator.clipboard?.writeText(textToCopy);
-    say('Dossier copied to clipboard');
+    say('Draft copied to clipboard');
   };
 
   return (
@@ -655,13 +656,13 @@ function AiHandoverCard({ l, sellers, say, refresh }) {
           </span>
           <b style={{ fontSize: 13 }}>Sales Handover Memory</b>
         </div>
-        <button className="linkbtn" type="button">{open ? 'Hide' : (memo ? 'View Dossier' : 'Generate Brief')}</button>
+        <button className="linkbtn" type="button">{open ? 'Hide' : (memo ? 'View Draft' : 'Generate Brief')}</button>
       </div>
 
       {open && (
         <div style={{ marginTop: 10 }}>
           <p className="muted" style={{ margin: '0 0 8px', fontSize: 12 }}>
-            Staff on leave or reassigning lead? Synthesizes visits, quotes, objections, and promises into an actionable briefing dossier:
+            Staff on leave or reassigning lead? Synthesizes visits, quotes, objections, and promises into an handover draft for team review:
           </p>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
             <select className="select" style={{ minWidth: 160 }} value={targetAgent} onChange={e => setTargetAgent(e.target.value)} aria-label="Incoming Agent">
@@ -669,7 +670,7 @@ function AiHandoverCard({ l, sellers, say, refresh }) {
               {sellers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
             <button className="btn sun" disabled={busy} onClick={generate}>
-              {busy ? 'Synthesizing…' : memo ? 'Regenerate Brief' : 'Generate Handover Memo'}
+              {busy ? 'Synthesizing”¦' : memo ? 'Regenerate Brief' : 'Generate Handover Memo'}
             </button>
           </div>
 
@@ -678,11 +679,15 @@ function AiHandoverCard({ l, sellers, say, refresh }) {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 6 }}>
                 <b style={{ color: '#059669', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
                   <Icon name="checkCircle" style={{ width: 14, height: 14 }} />
-                  EXECUTIVE CLIENT HANDOVER DOSSIER
+                  AI GENERATED HANDOVER DRAFT
                 </b>
                 <button className="btn sm ghost" onClick={copyMemo}>
-                  <Icon name="copy" />Copy Dossier
+                  <Icon name="copy" />Copy Draft
                 </button>
+              </div>
+
+              <div className="note" role="note" style={{ marginBottom: 10, fontSize: 12 }}>
+                {memoObj.reviewNotice || 'Review dates, quoted terms, commitments, and next steps against the source CRM activity before handover.'}
               </div>
 
               {memoObj ? (
@@ -698,7 +703,7 @@ function AiHandoverCard({ l, sellers, say, refresh }) {
                   )}
                   {memoObj.offeredPrice && (
                     <div style={{ background: 'var(--panel)', padding: '6px 10px', borderRadius: 6, border: '1px solid var(--line)' }}>
-                      <b>Quoted Commercials:</b> {memoObj.offeredPrice}
+                      <b>Quote summary (verify):</b> {memoObj.offeredPrice}
                     </div>
                   )}
                   {Array.isArray(memoObj.criticalNotes) && memoObj.criticalNotes.length > 0 && (

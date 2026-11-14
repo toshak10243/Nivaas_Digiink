@@ -5,8 +5,6 @@ export async function runMigrations() {
     ALTER TABLE leads ADD COLUMN IF NOT EXISTS followup_at timestamptz;
     ALTER TABLE leads ADD COLUMN IF NOT EXISTS followup_type text DEFAULT 'call';
     ALTER TABLE leads ADD COLUMN IF NOT EXISTS followup_note text;
-    ALTER TABLE leads ADD COLUMN IF NOT EXISTS preferences jsonb NOT NULL DEFAULT '[]';
-    ALTER TABLE leads ADD COLUMN IF NOT EXISTS checklist jsonb NOT NULL DEFAULT '{}';
 
     DO $$
     BEGIN

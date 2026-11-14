@@ -8,11 +8,12 @@ export function costSheet(project, type, unit) {
   const parking = Number(c.parking || 0);
   const club = Number(c.club || 0);
   const deposit = Number(c.maintenance_deposit || 0);
-  const gst = Math.round((base + plc + parking + club) * (Number(c.gst_pct || 0) / 100));
-  const total = Math.round(base + plc + parking + club + deposit + gst);
+  const registry_pct = Number(c.registry_pct ?? 7.5);
+  const registry = Math.round((base + plc + parking + club) * (registry_pct / 100));
+  const total = Math.round(base + plc + parking + club + deposit + registry);
   const stamp = Math.round((base + plc) * (Number(c.stamp_pct || 0) / 100));
   const registration = Number(c.registration || 0);
-  return { sqft, rate, base: Math.round(base), plc, parking, club, deposit, gst, gst_pct: Number(c.gst_pct || 0),
+  return { sqft, rate, base: Math.round(base), plc, parking, club, deposit, registry, registry_pct,
     total, stamp, stamp_pct: Number(c.stamp_pct || 0), registration, all_in: total + stamp + registration };
 }
 

@@ -80,7 +80,7 @@ function Thread({ id, me, say, go, onChange }) {
     setBusy(true); setTestError('');
     try {
       const result = await api.post(`/api/chats/${id}/ai-preview`, { text: message, history: testMessages.slice(-6) });
-      setTestMessages(previous => [...previous, { sender: 'customer', body: message }, { sender: 'ai', body: result.reply }]);
+      setTestMessages(previous => [...previous, { sender: 'customer', body: message }, { sender: 'ai', body: result.reply, attachments: result.attachments || [] }]);
       setTestText('');
     } catch (error) { setTestError(error.message); }
     finally { setBusy(false); }
@@ -110,7 +110,7 @@ function Thread({ id, me, say, go, onChange }) {
           </div>
         ))}
         {testMessages.length > 0 && <div className="sysmsg">Demo conversation ? visible only in this browser, not sent to WhatsApp.</div>}
-        {testMessages.map((m, index) => <div key={index} className={'bub ' + m.sender}><span className="by">{m.sender === 'ai' ? 'AI demo reply' : 'Demo customer'}</span>{m.body}</div>)}
+        {testMessages.map((m, index) => <div key={index} className={'bub ' + m.sender}><span className="by">{m.sender === 'ai' ? 'AI demo reply' : 'Demo customer'}</span>{m.body}{m.attachments?.length > 0 && <div className="preview-attachments">{m.attachments.map((file, i) => <figure key={`${file.url}-${i}`}><img src={api.media(file.url)} alt={file.title || file.type_name} /><figcaption>{file.kind === 'floorplan' ? `${file.type_name} layout` : file.title || `${file.type_name} sample flat`}</figcaption></figure>)}</div>}</div>)}
         {busy && <div className="typing">Working <i /><i /><i /></div>}
       </div>
       <div className="composer">
@@ -173,7 +173,9 @@ function NewChatModal({ me, say, go, onClose, onDone }) {
         ? { lead_id: leadId, initial_message: finalMsg }
         : { phone: targetPhone, name: nameInput, initial_message: finalMsg };
       const chat = await api.post('/api/chats', payload);
-      say('WhatsApp conversation started');
+      say(chat.templateSent
+        ? 'Approved intro template sent. You can send your message after the customer replies.'
+        : 'WhatsApp message sent');
       onDone(chat);
     } catch (e) {
       say(e.message);
@@ -306,6 +308,7 @@ function NewChatModal({ me, say, go, onClose, onDone }) {
             <div className="msgpreview">{finalMsg}</div>
           </div>
         )}
+        <small className="muted">Outside WhatsApp's 24-hour reply window, Nivaas sends the approved intro template. Your selected message can be sent after the customer replies.</small>
       </div>
     </Modal>
   );

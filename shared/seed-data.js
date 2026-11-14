@@ -34,7 +34,7 @@ export function buildSeed(now = Date.now()) {
     { id: 'sunil', role: 'maintenance', name: 'Sunil Kumar', email: 'sunil@sgdevelopers.in', phone: '919829099999', profile: { skills: ['electrical', 'lift'] } },
   ];
 
-  const charges = { parking: 300000, club: 150000, maintenance_deposit: 75000, gst_pct: 5, stamp_pct: 6, registration: 30000 };
+  const charges = { parking: 300000, club: 150000, maintenance_deposit: 75000, registry_pct: 7.5, stamp_pct: 6, registration: 30000 };
   const plan = [
     { milestone: 'On booking', pct: 10 }, { milestone: 'Within 30 days (agreement)', pct: 15 }, { milestone: 'On plinth', pct: 15 },
     { milestone: 'On 3rd floor slab', pct: 15 }, { milestone: 'On top slab', pct: 15 }, { milestone: 'On brickwork & plaster', pct: 15 }, { milestone: 'On possession', pct: 15 },
@@ -49,7 +49,9 @@ export function buildSeed(now = Date.now()) {
       highlights: ['Only 2 homes per floor', '8 min to Ajmer Road', '3 schools within 2 km', 'Vastu-compliant layouts'],
       cover: 'saffron-exterior.jpg', brochure: null,
       media: [['image', 'saffron-exterior.jpg', 'Front elevation'], ['image', 'saffron-dusk.jpg', 'Evening view'], ['video', 'walkthrough.mp4', 'Walkthrough video'],
-        ['image', 'interior-living.jpg', 'Sample living room'], ['image', 'interior-bedroom.jpg', 'Sample master bedroom'], ['image', 'amenity-pool.jpg', 'Rooftop pool']],
+        ['image', 'interior-living.jpg', 'Sample living room'], ['image', 'interior-bedroom.jpg', 'Sample master bedroom'], ['image', 'amenity-pool.jpg', 'Rooftop pool'],
+        ['image', 'sample-3bhk-living.png', '3 BHK sample flat living room', 'sf3'], ['image', 'interior-bedroom.jpg', '3 BHK sample bedroom', 'sf3'],
+        ['image', 'sample-3bhk-living.png', '3 BHK Corner sample flat living room', 'sf3c'], ['image', 'interior-bedroom.jpg', '3 BHK Corner sample bedroom', 'sf3c']],
       types: [
         { id: 'sf3', name: '3 BHK', bhk: 3, carpet_sqft: 1120, builtup_sqft: 1350, super_sqft: 1580, bathrooms: 3, balconies: 2, floorplan: 'fp-3bhk.png' },
         { id: 'sf3c', name: '3 BHK Corner', bhk: 3, carpet_sqft: 1180, builtup_sqft: 1420, super_sqft: 1650, bathrooms: 3, balconies: 2, floorplan: 'fp-3bhk-corner.png' },
@@ -70,7 +72,9 @@ export function buildSeed(now = Date.now()) {
       highlights: ['1-acre central park', 'Metro station 2.5 km', 'Mansarovar market 5 min', 'Bank loans from 8.5%*'],
       cover: 'aravali-exterior.jpg', brochure: null,
       media: [['image', 'aravali-exterior.jpg', 'Twin towers'], ['image', 'aravali-siteplan.jpg', 'Site plan'], ['image', 'amenity-pool.jpg', 'Pool & clubhouse'],
-        ['video', 'walkthrough.mp4', 'Sample flat walkthrough'], ['image', 'interior-living.jpg', 'Sample living room'], ['image', 'interior-bedroom.jpg', 'Sample bedroom']],
+        ['video', 'walkthrough.mp4', 'Sample flat walkthrough'], ['image', 'interior-living.jpg', 'Sample living room'], ['image', 'interior-bedroom.jpg', 'Sample bedroom'],
+        ['image', 'sample-2bhk-living.png', '2 BHK sample flat living room', 'ar2'], ['image', 'interior-bedroom.jpg', '2 BHK sample bedroom', 'ar2'],
+        ['image', 'sample-3bhk-living.png', '3 BHK sample flat living room', 'ar3'], ['image', 'interior-bedroom.jpg', '3 BHK sample bedroom', 'ar3']],
       types: [
         { id: 'ar2', name: '2 BHK', bhk: 2, carpet_sqft: 820, builtup_sqft: 980, super_sqft: 1150, bathrooms: 2, balconies: 1, floorplan: 'fp-2bhk.png' },
         { id: 'ar3', name: '3 BHK', bhk: 3, carpet_sqft: 1120, builtup_sqft: 1350, super_sqft: 1580, bathrooms: 3, balconies: 2, floorplan: 'fp-3bhk.png' },

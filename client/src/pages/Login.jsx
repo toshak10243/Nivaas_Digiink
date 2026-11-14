@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+﻿import React, { useState } from 'react';
 import { api } from '../api/index.js';
 import { Logo, Icon } from '../components/ui.jsx';
 import logoImg from '../assets/logo.png';
@@ -13,9 +13,9 @@ const ROLES = [
 
 // Sample logins, shown only while running locally (npm run dev), never in the production build.
 const SAMPLES = [
-  ['Builder admin', 'admin@sgdevelopers.in', 'nivaas123'], ['Sales · Rohit', 'rohit@sgdevelopers.in', 'nivaas123'], ['Sales · Neha', 'neha@sgdevelopers.in', 'nivaas123'],
-  ['Broker · Rajesh', 'rajesh@sharmarealty.in', 'nivaas123'], ['Broker · Pooja', 'pooja@jaipurhomes.co', 'nivaas123'], ['Maintenance · Ajay', 'ajay@sgdevelopers.in', 'nivaas123'],
-  ['Customer · Ramesh (101-F)', 'ramesh.gupta@gmail.com', 'home1234'],
+  ['Builder admin', 'admin@sgdevelopers.in', 'nivaas123'], ['Sales - Rohit', 'rohit@sgdevelopers.in', 'nivaas123'], ['Sales - Neha', 'neha@sgdevelopers.in', 'nivaas123'],
+  ['Broker - Rajesh', 'rajesh@sharmarealty.in', 'nivaas123'], ['Broker - Pooja', 'pooja@jaipurhomes.co', 'nivaas123'], ['Maintenance - Ajay', 'ajay@sgdevelopers.in', 'nivaas123'],
+  ['Customer - Ramesh (101-F)', 'ramesh.gupta@gmail.com', 'home1234'],
 ];
 
 export default function Login({ onDone }) {
@@ -47,7 +47,7 @@ export default function Login({ onDone }) {
             <div className="login-hero-text" style={{ marginTop: 36 }}>
               <h1>Smart Real Estate Sales, Booking &amp; Handover.</h1>
               <p>
-                From advertising leads to key handover. Live dynamic inventory, AI objection copilot, digital site visit passports, and verified buyer handover rooms in one unified workspace.
+                From advertising leads to key handover. Live dynamic inventory, AI objection copilot, site visit notes and AI drafted buyer handover summaries in one unified workspace.
               </p>
             </div>
 
@@ -68,7 +68,7 @@ export default function Login({ onDone }) {
                 </div>
                 <div className="login-feature-text">
                   <b>AI Objection &amp; Sales Handover Copilot</b>
-                  <span>Instant verified objection resolution scripts and team handover memory.</span>
+                  <span>AI drafted objection replies and handover notes, ready for team review.</span>
                 </div>
               </div>
 
@@ -77,7 +77,7 @@ export default function Login({ onDone }) {
                   <Icon name="calendar" />
                 </div>
                 <div className="login-feature-text">
-                  <b>Smart Route &amp; Visit Evidence Passport</b>
+                  <b>Smart Route &amp; Site Visit Notes</b>
                   <span>Automated staff allocation and tamper-evident buyer visit records.</span>
                 </div>
               </div>
@@ -96,7 +96,7 @@ export default function Login({ onDone }) {
 
           <div className="login-trust-footer">
             <Icon name="checkCircle" style={{ width: 16, height: 16, color: '#10b981' }} />
-            <span>RERA Compliant · Enterprise Grade · Real-Time WhatsApp Engine</span>
+            <span>RERA Compliant | Enterprise Grade | Real-Time WhatsApp Engine</span>
           </div>
         </div>
 
@@ -113,7 +113,7 @@ export default function Login({ onDone }) {
 
             {api.mode === 'demo' ? (
               <div>
-                <h2 className="login-form-title">Try the demo as…</h2>
+                <h2 className="login-form-title">Try the demo as...</h2>
                 <p className="login-form-sub">Sample builder: Shree Ganesh Developers, Jaipur. Switch roles any time from the top bar.</p>
                 {ROLES.map(([k, l, d, ic]) => (
                   <button key={k} className="login-rolecard-white" onClick={() => { api.loginAs(k); onDone(); }}>
@@ -153,13 +153,13 @@ export default function Login({ onDone }) {
 
                 <div className="login-field">
                   <label htmlFor="l-pw">Password</label>
-                  <input id="l-pw" type="password" className="login-input" placeholder="••••••••" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} required minLength={mode === 'setup' ? 8 : 1} value={f.password} onChange={set('password')} />
+                  <input id="l-pw" type="password" className="login-input" placeholder="Enter your password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} required minLength={mode === 'setup' ? 8 : 1} value={f.password} onChange={set('password')} />
                 </div>
 
                 {err && <div className="login-err-msg">{err}</div>}
 
                 <button className="login-btn-primary" disabled={busy}>
-                  {busy ? 'Verifying…' : mode === 'login' ? 'Sign In to Workspace' : 'Create Company Workspace'}
+                  {busy ? 'Verifying...' : mode === 'login' ? 'Sign In to Workspace' : 'Create Company Workspace'}
                 </button>
 
                 <button type="button" className="login-btn-secondary" onClick={() => setMode(mode === 'login' ? 'setup' : 'login')}>

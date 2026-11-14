@@ -166,8 +166,6 @@ CREATE TABLE IF NOT EXISTS leads (
 );
 CREATE INDEX IF NOT EXISTS leads_org_stage ON leads(org_id, stage);
 CREATE INDEX IF NOT EXISTS leads_assigned ON leads(assigned_to);
-ALTER TABLE leads ADD COLUMN IF NOT EXISTS preferences jsonb NOT NULL DEFAULT '[]';
-ALTER TABLE leads ADD COLUMN IF NOT EXISTS checklist jsonb NOT NULL DEFAULT '{}';
 CREATE INDEX IF NOT EXISTS leads_followup ON leads(org_id, followup_at);
 CREATE UNIQUE INDEX IF NOT EXISTS leads_org_phone ON leads(org_id, phone) WHERE phone IS NOT NULL AND stage <> 'lost';
 

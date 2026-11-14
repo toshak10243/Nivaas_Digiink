@@ -1,17 +1,24 @@
 import jwt from 'jsonwebtoken';
 import { config } from '../config.js';
+import { one } from '../db.js';
 
 export const sign = u => jwt.sign({ uid: u.id, org: u.org_id, role: u.role, name: u.name }, config.jwtSecret, { expiresIn: '30d' });
 
 export function requireAuth(req, res, next) {
   const raw = req.get('authorization')?.replace(/^Bearer /, '') || req.query.token;
+  let claims;
   try {
-    const p = jwt.verify(raw, config.jwtSecret);
-    req.user = { id: p.uid, org: p.org, role: p.role, name: p.name };
-    next();
+    claims = jwt.verify(raw, config.jwtSecret);
   } catch {
-    res.status(401).json({ error: 'Please log in again' });
+    return res.status(401).json({ error: 'Please log in again' });
   }
+  one(`SELECT id, org_id, role, name FROM users WHERE id = $1 AND org_id = $2 AND active`, [claims.uid, claims.org])
+    .then(user => {
+      if (!user) return res.status(401).json({ error: 'Please log in again' });
+      req.user = { id: user.id, org: user.org_id, role: user.role, name: user.name };
+      next();
+    })
+    .catch(next);
 }
 
 /** allow('admin','sales') → 403 for everyone else */

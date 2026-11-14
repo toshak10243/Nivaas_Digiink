@@ -31,7 +31,7 @@ for (const p of S.projects) {
     highlights: p.highlights, cover_url: media(p.cover), brochure_url: null, sales_pool: p.sales_pool, created_at: S.ago(400) });
   for (const t of p.types) { types.push({ ...t, project_id: p.id, floorplan_url: media(t.floorplan) }); mediaRows.push({ id: nid('m'), project_id: p.id, unit_type_id: t.id, kind: 'floorplan', url: media(t.floorplan), title: `${t.name} floor plan`, sort: 50 }); }
   for (const tw of p.towers) towers.push({ id: p.id + ':T' + tw.name, project_id: p.id, name: tw.name, floors: tw.floors });
-  p.media.forEach(([kind, f, title], i) => mediaRows.push({ id: nid('m'), project_id: p.id, kind, url: media(f), title, sort: i }));
+  p.media.forEach(([kind, f, title, typeId], i) => mediaRows.push({ id: nid('m'), project_id: p.id, unit_type_id: typeId || null, kind, url: media(f), title, sort: i }));
   for (const x of p.updates) updates.push({ id: nid('up'), project_id: p.id, title: x.title, body: x.body, created_at: S.ago(x.days) });
 }
 for (const u of S.units) units.push({ id: u.id, project_id: u.project, tower_id: u.project + ':T' + u.tower, unit_type_id: u.type, unit_no: u.unit_no, floor: u.floor, facing: u.facing,
@@ -105,7 +105,7 @@ const notify = (userId, kind, body, link) => {
 };
 notify('rohit', 'visit', 'Site visit booked by AI: Aarti Joshi, tomorrow 11:00 am', '/leads/l1');
 notify('rohit', 'share_view', 'Aarti Joshi opened your 302-F link', '/leads/l1');
-notify(null, 'ticket', 'New complaint. Ticket #102 · 102-F: Kitchen socket not working', '/tickets/tk2');
+notify(null, 'ticket', 'New complaint. Ticket #102 Â· 102-F: Kitchen socket not working', '/tickets/tk2');
 notify(null, 'booking', `${UN('saffron:102-F').unit_no} (Saffron Residency) booked by Neha Jain`, '/bookings/' + bookings.find(b => b.unit_id === 'saffron:102-F').id);
 notify('ajay', 'ticket', 'Ticket #101 assigned to you: Seepage on master bathroom wall', '/tickets/tk1');
 notify('c0', 'update', 'Construction update: 4th floor slab cast', '/portal');
@@ -136,7 +136,7 @@ FACTS: ${facts}
 Lead: ${JSON.stringify({ name: lead.name, budget: lead.budget, config: lead.config_pref })}
 CHAT:
 ${history}
-Reply in the customer's language/style (Roman Hinglish → Hinglish), 1–3 short sentences.
+Reply in the customer's language/style (Roman Hinglish â†’ Hinglish), 1–3 short sentences.
 Return only JSON: {"reply":"","visit_at":"ISO datetime if a visit day+time was agreed, else empty","summary":"1 sentence for the agent"}`, { modelTier: 'quick', cache: false });
     } catch { out = null; }
   }
@@ -144,9 +144,9 @@ Return only JSON: {"reply":"","visit_at":"ISO datetime if a visit day+time was a
     const last = (chatMsgs.filter(m => m.chat_id === chat.id && m.sender === 'customer').at(-1)?.body || '').toLowerCase();
     const unit = (last.match(/\d{3}-?[a-z]/i) || [])[0];
     if (unit) { const u = units.find(x => x.unit_no.toLowerCase() === unit.replace(/(\d{3})-?([a-z])/i, '$1-$2').toLowerCase()); out = { reply: u ? (u.status === 'available' ? `Haan, ${u.unit_no} (${T(u.unit_type_id).name}, ${u.facing}) abhi available hai. All-inclusive lagbhag ${inr(priceOf(u).total)} (stamp duty alag). Site visit kab rakhein?` : `${u.unit_no} abhi available nahi hai. Same type mein ${avail.filter(a => a.unit_type_id === u.unit_type_id).slice(0, 2).map(a => a.unit_no).join(' aur ')} available hain. Dekhna chahenge?`) : 'Ye unit number mujhe list mein nahi mila. Aap 2, 3 ya 4 BHK mein se kya dekh rahe hain?' }; }
-    else if (/kal|tomorrow|sunday|saturday|baje|am|pm/.test(last)) out = { reply: 'Perfect, aapka site visit book kar diya hai 👍 Main location bhej raha hoon. Aane se pehle ek call kar lijiyega.', visit_at: new Date(Date.now() + 864e5).toISOString().replace(/T.*/, 'T11:00:00+05:30') };
-    else if (/emi|loan/.test(last)) out = { reply: 'SBI, HDFC aur Axis se approved project hai, loan 8.5% se shuru hota hai. 20% down payment par EMI lagbhag ₹70–75 hazaar/month aati hai 3 BHK ke liye. Visit par exact calculation kar denge. Kab aa sakte hain?' };
-    else if (/discount|kam|best price/.test(last)) out = { reply: `Final price ${agent.name.split(' ')[0]} ji visit par discuss karenge. Abhi ka all-inclusive price list wala hi hai. Aap kab visit kar sakte hain?` };
+    else if (/kal|tomorrow|sunday|saturday|baje|am|pm/.test(last)) out = { reply: 'What date and time would you prefer? I will confirm availability with the team before booking.' };
+    else if (/emi|loan/.test(last)) out = { reply: 'Loan eligibility, lender tie-ups, and EMI depend on current lender terms and your profile. I will confirm current details with the team.' };
+    else if (/discount|kam|best price/.test(last)) out = { reply: 'I will confirm the current price and any applicable offer with the project team before sharing. Which unit or configuration are you considering?' };
     else out = { reply: `${p.name} mein ${types.filter(t => t.project_id === p.id).map(t => t.name).join(', ')} available hain, possession ${p.possession}. Aapko kaunsa configuration chahiye aur budget kitna hai?` };
   }
   chatMsgs.push({ id: nid('cm'), chat_id: chat.id, sender: 'ai', body: out.reply, created_at: now() });
@@ -175,7 +175,7 @@ function assign(lead, userId, actor, reason = 'auto') {
   const re = lead.assigned_to && lead.assigned_to !== who.id;
   lead.assigned_to = who.id; lead.assigned_at = now(); lead.first_touch_at = null;
   log(lead.id, actor, re ? 'reassigned' : 'assigned', `${re ? 'Reassigned' : 'Assigned'} to ${who.name}${reason === 'auto' ? ' automatically (least busy agent)' : ''}`);
-  notify(who.id, 'lead_assigned', `New lead: ${lead.name}${lead.config_pref ? ' · ' + lead.config_pref : ''}`, `/leads/${lead.id}`);
+  notify(who.id, 'lead_assigned', `New lead: ${lead.name}${lead.config_pref ? ' Â· ' + lead.config_pref : ''}`, `/leads/${lead.id}`);
   const num = waNumbers.find(w => w.user_id === who.id);
   if (num) {
     let chat = chats.find(c => c.lead_id === lead.id && c.wa_number_id === num.id);
@@ -271,10 +271,10 @@ const projectFull = id => { const p = P(id); if (!p) throw err(404, 'Project not
   return clone({ ...p, towers: towers.filter(t => t.project_id === id), unit_types: types.filter(t => t.project_id === id), media: mediaRows.filter(m => m.project_id === id).sort((a, b) => a.sort - b.sort),
     updates: updates.filter(u => u.project_id === id).sort((a, b) => b.created_at.localeCompare(a.created_at)),
     stats: { total: us.length, available: us.filter(u => u.status === 'available').length, hold: us.filter(u => u.status === 'hold').length, sold: us.filter(u => ['booked', 'sold'].includes(u.status)).length } }); };
-on('GET', '/api/projects', () => clone(projects.map(p => { const us = units.filter(u => u.project_id === p.id); const ts = types.filter(t => t.project_id === p.id);
-  return { ...p, total: us.length, available: us.filter(u => u.status === 'available').length, sold: us.filter(u => ['booked', 'sold'].includes(u.status)).length, from_price: Math.min(...ts.map(t => t.super_sqft * p.rate_sqft)), bhks: [...new Set(ts.map(t => t.bhk))].join(', ') }; })));
-on('GET', '/api/projects/:id', p => projectFull(p.id));
-on('POST', '/api/projects', (_, b) => { need('admin'); if (!b.name) throw err(400, 'Project name is required'); const p = { id: nid('p'), org_id: 'org', name: b.name, city: b.city || 'Jaipur', rate_sqft: Number(b.rate_sqft) || 0, status: 'pre_launch', charges: { parking: 300000, club: 150000, maintenance_deposit: 75000, gst_pct: 5, stamp_pct: 6, registration: 30000 }, payment_plan: S.projects[0].payment_plan, amenities: [], highlights: [], sales_pool: [], created_at: now() }; projects.push(p); return projectFull(p.id); });
+on('GET', '/api/projects', () => { need('admin', 'sales', 'broker'); return clone(projects.map(p => { const us = units.filter(u => u.project_id === p.id); const ts = types.filter(t => t.project_id === p.id);
+  return { ...p, total: us.length, available: us.filter(u => u.status === 'available').length, sold: us.filter(u => ['booked', 'sold'].includes(u.status)).length, from_price: Math.min(...ts.map(t => t.super_sqft * p.rate_sqft)), bhks: [...new Set(ts.map(t => t.bhk))].join(', ') }; })); });
+on('GET', '/api/projects/:id', p => { need('admin', 'sales', 'broker'); return projectFull(p.id); });
+on('POST', '/api/projects', (_, b) => { need('admin'); if (!b.name) throw err(400, 'Project name is required'); const p = { id: nid('p'), org_id: 'org', name: b.name, city: b.city || 'Jaipur', rate_sqft: Number(b.rate_sqft) || 0, status: 'pre_launch', charges: { parking: 300000, club: 150000, maintenance_deposit: 75000, registry_pct: 7.5, stamp_pct: 6, registration: 30000 }, payment_plan: S.projects[0].payment_plan, amenities: [], highlights: [], sales_pool: [], created_at: now() }; projects.push(p); return projectFull(p.id); });
 on('PUT', '/api/projects/:id', (p, b) => { need('admin'); Object.assign(P(p.id), b); return projectFull(p.id); });
 on('POST', '/api/projects/:id/unit-types', (p, b) => { need('admin'); const t = { id: nid('t'), project_id: p.id, bathrooms: 2, balconies: 1, ...b }; types.push(t); return t; });
 on('PUT', '/api/unit-types/:id', (p, b) => { need('admin'); const t = T(p.id); Object.assign(t, b); return t; });
@@ -315,7 +315,7 @@ on('DELETE', '/api/projects/:projectId/updates/:updateId', p => {
   if (i >= 0) updates.splice(i, 1);
   return { ok: true };
 });
-on('GET', '/api/units', q => clone(units.filter(u => (!q.project_id || u.project_id === q.project_id) && (!q.status || u.status === q.status)).map(unitRow)));
+on('GET', '/api/units', q => { need('admin', 'sales', 'broker'); return clone(units.filter(u => (!q.project_id || u.project_id === q.project_id) && (!q.status || u.status === q.status)).map(unitRow)); });
 on('PATCH', '/api/units/:id', (p, b) => {
   const u = UN(p.id); if (!u) throw err(404, 'Unit not found');
   if (b.action === 'hold') { if (u.status !== 'available') throw err(409, `${u.unit_no} is not available`); Object.assign(u, { status: 'hold', hold_by: me.id, hold_until: new Date(Date.now() + org.settings.holds.hours * 3600e3).toISOString() }); notify(null, 'inventory', `${me.name} put ${u.unit_no} on hold for ${org.settings.holds.hours} h`, '/inventory'); }
@@ -328,36 +328,6 @@ on('PATCH', '/api/units/:id', (p, b) => {
 // leads
 on('GET', '/api/leads', q => { need('admin', 'sales', 'broker'); return clone(scopeLeads().filter(l => ['stage', 'project_id', 'assigned_to', 'source', 'temperature'].every(k => !q[k] || l[k] === q[k]) && (!q.q || `${l.name} ${l.phone}`.toLowerCase().includes(q.q.toLowerCase())))
   .sort((a, b) => b.updated_at.localeCompare(a.updated_at)).map(leadRow)); });
-on('POST', '/api/leads/bulk-message', (_, b) => {
-  need('admin','sales');
-  const rows = scopeLeads().filter(l => b.ids?.includes(l.id));
-  if (!b.ids?.length || b.ids.length > 50 || rows.length !== new Set(b.ids).size) throw err(400, 'Select up to 50 accessible leads.');
-  if (!b.text?.trim()) throw err(400, 'Enter a message');
-  return { sent: [], failed: rows.map(l => ({ id: l.id, reason: 'Demo mode does not send real WhatsApp messages.' })) };
-});
-on('POST', '/api/leads/bulk', (_, b) => {
-  need('admin', 'sales', 'broker');
-  if (!Array.isArray(b.ids) || !b.ids.length || b.ids.length > 500) throw err(400, 'Select between 1 and 500 leads.');
-  if (!['stage','assign','delete','complete'].includes(b.action)) throw err(400, 'Unknown action');
-  if (['assign','delete'].includes(b.action)) need('admin');
-  const ids = [...new Set(b.ids)], rows = scopeLeads().filter(l => ids.includes(l.id));
-  if (rows.length !== ids.length) throw err(403, 'Some leads are not accessible');
-  if (b.action === 'stage' && !['new','contacted','qualified','visit_scheduled','visit_done','negotiation','booked','lost'].includes(b.value)) throw err(400, 'Unknown stage');
-  const person = U(b.value);
-  if (b.action === 'assign' && (!person?.active || !['sales','broker'].includes(person.role))) throw err(400, 'Select an active sales agent or broker');
-  if (b.action === 'delete' && (rows.some(l => l.stage === 'booked') || bookings.some(x => ids.includes(x.lead_id)))) throw err(409, 'Leads linked to bookings cannot be deleted.');
-  for (const l of rows) {
-    if (b.action === 'delete') {
-      for (const table of [events, visits, chats]) for (let i = table.length - 1; i >= 0; i--) if (table[i].lead_id === l.id) table.splice(i, 1);
-      leads.splice(leads.indexOf(l), 1); continue;
-    }
-    if (b.action === 'stage') l.stage = b.value;
-    if (b.action === 'complete') { l.followup_at = null; l.followup_type = null; l.followup_note = null; }
-    if (b.action === 'assign') { l.assigned_to = person.id; l.assigned_at = now(); l.first_touch_at = null; visits.filter(v => v.lead_id === l.id && ['scheduled','confirmed'].includes(v.status)).forEach(v => { v.agent_id = person.id; }); chats.filter(c => c.lead_id === l.id).forEach(c => { c.agent_id = person.id; c.pending_ai_at = null; }); }
-    l.updated_at = now(); log(l.id, me.id, 'note', `Bulk ${b.action}${b.value ? ': ' + b.value : ''}`);
-  }
-  return { ok: true, count: ids.length };
-});
 on('GET', '/api/leads/:id', p => {
   const l = scopeLeads().find(x => x.id === p.id); if (!l) throw err(404, 'Lead not found');
   return clone({ ...l, events: events.filter(e => e.lead_id === l.id).sort((a, b) => b.created_at.localeCompare(a.created_at)).map(e => ({ ...e, actor: U(e.actor_id)?.name || null })),
@@ -379,10 +349,10 @@ on('POST', '/api/leads', (_, b) => {
 on('PATCH', '/api/leads/:id', (p, b) => {
   const l = scopeLeads().find(x => x.id === p.id); if (!l) throw err(404, 'Lead not found');
   const old = l.stage;
-  for (const k of ['name', 'email', 'budget', 'config_pref', 'purpose', 'timeline', 'notes', 'stage', 'temperature', 'project_id', 'unit_id', 'lost_reason', 'followup_at', 'followup_type', 'followup_note', 'preferences', 'checklist']) if (b[k] !== undefined) l[k] = b[k];
+  for (const k of ['name', 'email', 'budget', 'config_pref', 'purpose', 'timeline', 'notes', 'stage', 'temperature', 'project_id', 'unit_id', 'lost_reason', 'followup_at', 'followup_type', 'followup_note']) if (b[k] !== undefined) l[k] = b[k];
   if (l.assigned_to === me.id && !l.first_touch_at) l.first_touch_at = now();
   l.updated_at = now();
-  if (b.stage && b.stage !== old) log(l.id, me.id, 'stage', `Stage: ${old.replace('_', ' ')} → ${b.stage.replace('_', ' ')}${b.lost_reason ? ` (${b.lost_reason})` : ''}`);
+  if (b.stage && b.stage !== old) log(l.id, me.id, 'stage', `Stage: ${old.replace('_', ' ')} â†’ ${b.stage.replace('_', ' ')}${b.lost_reason ? ` (${b.lost_reason})` : ''}`);
   if (b.followup_at) log(l.id, me.id, 'note', `Scheduled follow-up for ${new Date(b.followup_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })} (${b.followup_type || 'call'})`);
   return clone(l);
 });
@@ -416,13 +386,24 @@ on('POST', '/api/leads/:id/ai-objection', (p, b) => {
   const l = leads.find(x => x.id === p.id);
   const pr = P(l?.project_id);
   const obj = b.objection || 'General inquiry';
-  const script = `Namaste ${l?.name?.split(' ')[0] || 'Sir'}! Regarding "${obj}", our project offers verified connectivity via 6-lane signal-free highway (just 15 mins to commercial hub). Also, our RERA approved milestone escrow account ensures that every rupee paid is directly linked to civil construction progress on site. Would 11:30 AM tomorrow suit you for a quick 15-minute walkthrough of the sample flat?`;
+  const script = `Namaste ${l?.name?.split(' ')[0] || 'there'}, thanks for sharing your concern about "${obj}". Iâ€™ll confirm the relevant details with the project team and get back to you. Please let me know if you would like to discuss this further.`;
+  const keyFacts = [
+    pr?.name && `Project record: ${pr.name}`,
+    pr?.location && `Location on project record: ${pr.location}`,
+    pr?.rate_sqft && `Rate on project record: ${pr.rate_sqft}`,
+    pr?.possession && `Possession on project record: ${pr.possession}`,
+    pr?.rera_no && `RERA number listed on project record: ${pr.rera_no}`,
+    Array.isArray(pr?.amenities) && pr.amenities.length && `Amenities listed: ${pr.amenities.join(', ')}`,
+    pr?.payment_plan && `Payment plan on project record: ${pr.payment_plan}`
+  ].filter(Boolean);
   return {
     objectionTitle: obj,
-    key_facts: [`Project: ${pr?.name || 'Nivaas Premium'} (${pr?.location || 'Jaipur'})`, 'RERA Escrow Account Compliance', 'Construction Linked Payment Protection'],
+    key_facts: keyFacts,
     pitch_script: script,
     responseScript: script,
-    whatsapp_message: script
+    whatsapp_message: script,
+    isDraft: true,
+    reviewNotice: 'Draft for review. Project record details may be incomplete; confirm facts with the responsible project representative before sharing.'
   };
 });
 
@@ -430,14 +411,13 @@ on('POST', '/api/leads/:id/ai-handover', (p, b) => {
   const l = leads.find(x => x.id === p.id);
   const pr = P(l?.project_id);
   const brief = {
-    summary: `Client ${l?.name || 'Prospective Buyer'} is looking for ${l?.config_pref || '3 BHK'} in ${pr?.name || 'Nivaas Project'} with a budget of ${l?.budget || '₹90 L - 1 Cr'}. Site tour conducted for Tower A and sample unit. Client requested detailed CLP schedule.`,
-    keyInterest: `${l?.config_pref || '3 BHK'}, ${pr?.name || 'Prime Tower'}`,
-    offeredPrice: `${l?.budget || '₹95 Lakhs'} with covered car parking`,
-    criticalNotes: [
-      'Inquired about morning sunlight and bank approvals (SBI, HDFC approved)',
-      'Agreed to free modular kitchen voucher if unit held before Sunday'
-    ],
-    recommendedAction: 'Schedule follow-up call at 11:00 AM tomorrow to share official cost sheet and confirm slot.'
+    summary: `CRM handover draft for ${l?.name || 'lead'}. Stage: ${l?.stage || 'not recorded'}. Configuration preference: ${l?.config_pref || 'not recorded'}. Buyer budget recorded: ${l?.budget || 'not recorded'}. Review the source activity before handover.`,
+    keyInterest: [l?.config_pref, pr?.name].filter(Boolean).join(', ') || 'Not recorded',
+    offeredPrice: 'No quote recorded in this draft. Review source activity.',
+    criticalNotes: ['Confirm buyer preferences, quoted terms, approvals, and commitments from the source records.'],
+    recommendedAction: 'Review the CRM timeline and confirm the next step with the assigned team member.',
+    isDraft: true,
+    reviewNotice: 'AI generated draft. Check the lead timeline and source records before relying on or sharing this summary.'
   };
   if (l) l.handover_summary = brief;
   return brief;
@@ -446,11 +426,14 @@ on('POST', '/api/leads/:id/ai-handover', (p, b) => {
 on('POST', '/api/visits/:id/ai-passport', (p, b) => {
   const v = visits.find(x => x.id === p.id);
   const passport = {
-    flats_shown: b.flats_shown || 'Tower A 3 BHK & Sample flat',
-    price_quoted: b.price_quoted || 'Standard Price Sheet',
-    commitments: b.commitments || 'Standard developer terms',
-    questions: b.questions || 'Discussed clubhouse & delivery timeline',
-    verified_at: now()
+    flats_shown: b.flats_shown || '',
+    price_quoted: b.price_quoted || '',
+    commitments: b.commitments || '',
+    questions: b.questions || '',
+    record_id: p.id,
+    recorded_at: now(),
+    isDraft: true,
+    reviewNotice: 'CRM-entered visit notes; these details are not independently verified.'
   };
   if (v) v.evidence_passport = passport;
   return { passport };
@@ -634,7 +617,7 @@ on('POST', '/api/tickets', (_, f) => {
   tickets.unshift(t);
   for (const file of f.getAll('photos')) ticketFiles.push({ id: nid('tf'), ticket_id: t.id, url: URL.createObjectURL(file) });
   ticketComments.push({ id: nid('tc'), ticket_id: t.id, author_id: null, body: `Ticket received. ${tech ? tech.name + ' from our maintenance team will' : 'Our team will'} contact you within ${hrs} hours.`, internal: false, created_at: now() });
-  const msg = `Ticket #${t.number} · ${UN(bk.unit_id).unit_no}: ${t.title}`;
+  const msg = `Ticket #${t.number} Â· ${UN(bk.unit_id).unit_no}: ${t.title}`;
   if (tech) notify(tech.id, 'ticket', `New complaint assigned to you. ${msg}`, `/tickets/${t.id}`);
   if (bk.sold_by) notify(bk.sold_by, 'ticket', `Your customer raised a complaint. ${msg}`, `/tickets/${t.id}`);
   notify(null, 'ticket', `New complaint. ${msg}`, `/tickets/${t.id}`);

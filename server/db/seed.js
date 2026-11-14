@@ -1,6 +1,10 @@
 // Loads the sample builder (shared/seed-data.js) into PostgreSQL.
 //   npm run db:seed            → adds the sample org
 //   npm run db:seed -- --reset → wipes ALL data first (careful)
+if (process.env.NODE_ENV === 'production') {
+  throw new Error('Refusing to load demo users and shared sample passwords in production.');
+}
+
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import { pool } from '../src/db.js';
@@ -36,7 +40,7 @@ try {
       await q(`INSERT INTO media (org_id, project_id, unit_type_id, kind, url, title, sort) VALUES ($1,$2,$3,'floorplan',$4,$5,50)`, [org.id, uid(p.id), uid(t.id), media(t.floorplan), `${t.name} floor plan`]);
     }
     for (const tw of p.towers) await q(`INSERT INTO towers (id, project_id, name, floors) VALUES ($1,$2,$3,$4)`, [uid(p.id + ':T' + tw.name), uid(p.id), tw.name, tw.floors]);
-    for (const [i, [kind, f, title]] of p.media.entries()) await q(`INSERT INTO media (org_id, project_id, kind, url, title, sort) VALUES ($1,$2,$3,$4,$5,$6)`, [org.id, uid(p.id), kind, media(f), title, i]);
+    for (const [i, [kind, f, title, typeId]] of p.media.entries()) await q(`INSERT INTO media (org_id, project_id, unit_type_id, kind, url, title, sort) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [org.id, uid(p.id), typeId ? uid(typeId) : null, kind, media(f), title, i]);
     for (const u of p.updates) await q(`INSERT INTO project_updates (project_id, title, body, created_at) VALUES ($1,$2,$3,$4)`, [uid(p.id), u.title, u.body, S.ago(u.days)]);
   }
   for (const u of S.units) await q(`INSERT INTO units (id, project_id, tower_id, unit_type_id, unit_no, floor, facing, plc_pct, status, hold_by, hold_until, notes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
