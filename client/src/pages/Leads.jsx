@@ -618,6 +618,10 @@ function AiHandoverCard({ l, sellers, say, refresh }) {
   const [memo, setMemo] = useState(l.handover_summary || null);
   const [targetAgent, setTargetAgent] = useState('');
 
+  const memoObj = typeof memo === 'object' && memo !== null ? memo : (typeof memo === 'string' && memo.trim().startsWith('{') ? (() => { try { return JSON.parse(memo); } catch { return null; } })() : null);
+  const hasValidMemo = Boolean(memoObj && (memoObj.summary || memoObj.keyInterest || memoObj.recommendedAction)) || Boolean(typeof memo === 'string' && memo.trim() && !memoObj);
+  const memoText = typeof memo === 'string' && !memoObj ? memo : (memoObj?.summary || '');
+
   const generate = async () => {
     setBusy(true);
     try {
@@ -629,17 +633,14 @@ function AiHandoverCard({ l, sellers, say, refresh }) {
       say('Handover draft generated');
       refresh();
     } catch (e) {
-      say(e.message);
+      say(e.message || 'Failed to generate handover draft');
     }
     setBusy(false);
   };
 
-  const memoObj = typeof memo === 'object' && memo !== null ? memo : (typeof memo === 'string' && memo.trim().startsWith('{') ? (() => { try { return JSON.parse(memo); } catch { return null; } })() : null);
-  const memoText = typeof memo === 'string' && !memoObj ? memo : (memoObj?.summary || '');
-
   const copyMemo = () => {
     const textToCopy = memoObj
-      ? `EXECUTIVE CLIENT BRIEFING DOSSIER\n\nClient: ${l.name} (${l.phone})\nSummary:\n${memoObj.summary || ''}\n\nKey Interest: ${memoObj.keyInterest || '—'}\nOffered Price: ${memoObj.offeredPrice || '—'}\n\nCritical Notes:\n${Array.isArray(memoObj.criticalNotes) ? memoObj.criticalNotes.map(n => '”¢ ' + n).join('\n') : ''}\n\nRecommended Action:\n${memoObj.recommendedAction || '—'}`
+      ? `EXECUTIVE CLIENT BRIEFING DOSSIER\n\nClient: ${l.name} (${l.phone})\nSummary:\n${memoObj.summary || ''}\n\nKey Interest: ${memoObj.keyInterest || '—'}\nOffered Price: ${memoObj.offeredPrice || '—'}\n\nCritical Notes:\n${Array.isArray(memoObj.criticalNotes) ? memoObj.criticalNotes.map(n => '• ' + n).join('\n') : (memoObj.criticalNotes || '')}\n\nRecommended Action:\n${memoObj.recommendedAction || '—'}`
       : String(memoText || '');
     if (!textToCopy) return;
     navigator.clipboard?.writeText(textToCopy);
@@ -656,7 +657,7 @@ function AiHandoverCard({ l, sellers, say, refresh }) {
           </span>
           <b style={{ fontSize: 13 }}>Sales Handover Memory</b>
         </div>
-        <button className="linkbtn" type="button">{open ? 'Hide' : (memo ? 'View Draft' : 'Generate Brief')}</button>
+        <button className="linkbtn" type="button">{open ? 'Hide' : (hasValidMemo ? 'View Draft' : 'Generate Brief')}</button>
       </div>
 
       {open && (
@@ -670,11 +671,11 @@ function AiHandoverCard({ l, sellers, say, refresh }) {
               {sellers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
             <button className="btn sun" disabled={busy} onClick={generate}>
-              {busy ? 'Synthesizing”¦' : memo ? 'Regenerate Brief' : 'Generate Handover Memo'}
+              {busy ? 'Synthesizing…' : hasValidMemo ? 'Regenerate Brief' : 'Generate Handover Memo'}
             </button>
           </div>
 
-          {memo && (
+          {hasValidMemo && (
             <div className="ai-script-box" style={{ background: 'var(--panel-2)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 6 }}>
                 <b style={{ color: '#059669', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -687,7 +688,7 @@ function AiHandoverCard({ l, sellers, say, refresh }) {
               </div>
 
               <div className="note" role="note" style={{ marginBottom: 10, fontSize: 12 }}>
-                {memoObj.reviewNotice || 'Review dates, quoted terms, commitments, and next steps against the source CRM activity before handover.'}
+                {memoObj?.reviewNotice || 'Review dates, quoted terms, commitments, and next steps against the source CRM activity before handover.'}
               </div>
 
               {memoObj ? (
@@ -714,6 +715,11 @@ function AiHandoverCard({ l, sellers, say, refresh }) {
                           <li key={i}>{typeof n === 'string' ? n : JSON.stringify(n)}</li>
                         ))}
                       </ul>
+                    </div>
+                  )}
+                  {typeof memoObj.criticalNotes === 'string' && memoObj.criticalNotes && (
+                    <div style={{ background: 'var(--panel)', padding: '6px 10px', borderRadius: 6, border: '1px solid var(--line)' }}>
+                      <b>Critical Notes:</b> {memoObj.criticalNotes}
                     </div>
                   )}
                   {memoObj.recommendedAction && (

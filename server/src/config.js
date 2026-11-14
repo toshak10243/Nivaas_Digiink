@@ -26,6 +26,8 @@ export const config = {
   port: Number(process.env.PORT || 4100),
   publicUrl,
   jwtSecret,
+  jwtExpiresIn: process.env.JWT_EXPIRES_IN || process.env.JWT_ACCESS_EXPIRY || '30d',
+  jwtRefreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || process.env.JWT_REFRESH_EXPIRY || '30d',
   databaseUrl: process.env.DATABASE_URL,
   uploadDir: path.resolve(process.env.UPLOAD_DIR || './uploads'),
   maxUploadMb: Number(process.env.MAX_UPLOAD_MB || 60),

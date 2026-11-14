@@ -1,6 +1,41 @@
 // Talks to the Node/Postgres server.
-let token = (() => { try { return sessionStorage.getItem('nv_token'); } catch { return null; } })();
-const save = t => { token = t; try { t ? sessionStorage.setItem('nv_token', t) : sessionStorage.removeItem('nv_token'); try { localStorage.removeItem('nv_token'); } catch {}; } catch { /* private mode */ } };
+let token = (() => {
+  try {
+    return localStorage.getItem('nv_token') || sessionStorage.getItem('nv_token');
+  } catch {
+    return null;
+  }
+})();
+
+let refreshToken = (() => {
+  try {
+    return localStorage.getItem('nv_refresh_token') || sessionStorage.getItem('nv_refresh_token');
+  } catch {
+    return null;
+  }
+})();
+
+const save = (t, r) => {
+  token = t;
+  refreshToken = r || refreshToken;
+  try {
+    if (t) {
+      localStorage.setItem('nv_token', t);
+      sessionStorage.setItem('nv_token', t);
+      if (r) {
+        localStorage.setItem('nv_refresh_token', r);
+        sessionStorage.setItem('nv_refresh_token', r);
+      }
+    } else {
+      localStorage.removeItem('nv_token');
+      sessionStorage.removeItem('nv_token');
+      localStorage.removeItem('nv_refresh_token');
+      sessionStorage.removeItem('nv_refresh_token');
+    }
+  } catch {
+    /* private mode */
+  }
+};
 
 async function req(method, path, body) {
   const isForm = body instanceof FormData;
@@ -11,7 +46,10 @@ async function req(method, path, body) {
   });
   if (res.status === 401 && path.startsWith('/api')) {
     save(null);
-    window.dispatchEvent(new Event('nivaas:session-expired'));
+    try {
+      sessionStorage.setItem('nivaas_session_expired', 'Session expired. Please log in again.');
+    } catch {}
+    window.dispatchEvent(new CustomEvent('nivaas:session-expired', { detail: { message: 'Session expired. Please log in again.' } }));
   }
   if (res.status === 204) return null;
   const data = await res.json().catch(() => ({}));
@@ -22,8 +60,16 @@ async function req(method, path, body) {
 export const realApi = {
   mode: 'real',
   isLoggedIn: () => !!token,
-  async login(email, password) { const r = await req('POST', '/auth/login', { email, password }); save(r.token); return r.user; },
-  async setup(body) { const r = await req('POST', '/auth/setup', body); save(r.token); return r.user; },
+  async login(email, password) {
+    const r = await req('POST', '/auth/login', { email, password });
+    save(r.token, r.refreshToken);
+    return r.user;
+  },
+  async setup(body) {
+    const r = await req('POST', '/auth/setup', body);
+    save(r.token, r.refreshToken);
+    return r.user;
+  },
   logout: () => save(null),
   get: p => req('GET', p),
   post: (p, b) => req('POST', p, b),

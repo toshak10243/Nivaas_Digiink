@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 import { one, q, tx } from '../db.js';
-import { sign, requireAuth, h, fail } from '../lib/auth.js';
+import { sign, signRefresh, requireAuth, h, fail } from '../lib/auth.js';
 import { rateLimit } from '../lib/rate-limit.js';
+import { config } from '../config.js';
 
 const r = Router();
 
@@ -11,7 +13,31 @@ r.post('/login', rateLimit({ windowMs: 15 * 60_000, limit: 10, key: req => `logi
   const u = await one(`SELECT * FROM users WHERE lower(email) = lower($1) AND active ORDER BY created_at LIMIT 1`, [email || '']);
   if (!u || !(await bcrypt.compare(password || '', u.password_hash))) throw fail(401, 'Wrong email or password');
   await q(`UPDATE users SET last_login = now() WHERE id = $1`, [u.id]);
-  res.json({ token: sign(u), user: { id: u.id, name: u.name, role: u.role, email: u.email } });
+  res.json({
+    token: sign(u),
+    refreshToken: signRefresh(u),
+    expiresIn: config.jwtExpiresIn,
+    user: { id: u.id, name: u.name, role: u.role, email: u.email }
+  });
+}));
+
+r.post('/refresh', h(async (req, res) => {
+  const { refreshToken } = req.body || {};
+  if (!refreshToken) throw fail(401, 'Session expired. Please log in again.');
+  let claims;
+  try {
+    claims = jwt.verify(refreshToken, config.jwtSecret);
+  } catch {
+    throw fail(401, 'Session expired. Please log in again.');
+  }
+  const u = await one(`SELECT * FROM users WHERE id = $1 AND org_id = $2 AND active`, [claims.uid, claims.org]);
+  if (!u) throw fail(401, 'Session expired. Please log in again.');
+  res.json({
+    token: sign(u),
+    refreshToken: signRefresh(u),
+    expiresIn: config.jwtExpiresIn,
+    user: { id: u.id, name: u.name, role: u.role, email: u.email }
+  });
 }));
 
 /** First-time setup: creates the builder org and its admin. Disabled once any org exists unless ALLOW_SIGNUP=1. */

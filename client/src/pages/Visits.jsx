@@ -187,9 +187,13 @@ export default function Visits({ go, say }) {
                       </button>
                     )}
 
-                    {v.status === 'done' && (
-                      <button className="btn sm" style={{ border: '1px solid #059669', color: '#059669' }} onClick={() => setPassportModal(v)}>
-                        <Icon name="shield" />Site Visit Notes
+                    {v.status === 'done' ? (
+                      <button className="btn sm" style={{ border: '1px solid #059669', color: '#059669', background: 'rgba(5,150,105,0.08)' }} onClick={() => setPassportModal(v)}>
+                        <Icon name="shield" />Evidence Passport
+                      </button>
+                    ) : (
+                      <button className="btn sm ghost" style={{ fontSize: 11.5 }} onClick={() => setPassportModal(v)} title="View/edit visit evidence passport & notes">
+                        <Icon name="shield" />Evidence Passport
                       </button>
                     )}
 

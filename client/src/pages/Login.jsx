@@ -18,7 +18,7 @@ const SAMPLES = [
   ['Customer - Ramesh (101-F)', 'ramesh.gupta@gmail.com', 'home1234'],
 ];
 
-export default function Login({ onDone }) {
+export default function Login({ onDone, notice }) {
   const [mode, setMode] = useState('login');
   const [f, setF] = useState({ email: '', password: '', company: '', name: '' });
   const [err, setErr] = useState('');
@@ -132,6 +132,25 @@ export default function Login({ onDone }) {
                 <p className="login-form-sub">
                   {mode === 'login' ? 'Enter your registered credentials to access your real estate portal.' : 'Create your company workspace and get started.'}
                 </p>
+
+                {notice && (
+                  <div style={{
+                    background: '#fef2f2',
+                    color: '#b91c1c',
+                    border: '1px solid #fecaca',
+                    borderRadius: 10,
+                    padding: '10px 14px',
+                    marginBottom: 16,
+                    fontSize: 13,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    fontWeight: 500
+                  }}>
+                    <Icon name="alert" style={{ width: 16, height: 16, flexShrink: 0 }} />
+                    <span>{notice}</span>
+                  </div>
+                )}
 
                 {mode === 'setup' && (
                   <>

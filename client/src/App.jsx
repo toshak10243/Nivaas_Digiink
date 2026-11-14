@@ -90,21 +90,39 @@ export default function App() {
   const [authed, setAuthed] = useState(api.isLoggedIn());
   const [toast, setToast] = useState('');
   const [sess, setSess] = useState(0);
+  const say = useCallback(t => { setToast(t); clearTimeout(say.t); say.t = setTimeout(() => setToast(''), 3500); }, []);
+
   useEffect(() => { const f = () => setRoute(parse()); window.addEventListener('hashchange', f); return () => window.removeEventListener('hashchange', f); }, []);
+
   useEffect(() => {
-    const onSessionExpired = () => {
+    try {
+      const msg = sessionStorage.getItem('nivaas_session_expired');
+      if (msg) {
+        sessionStorage.removeItem('nivaas_session_expired');
+        say(msg);
+      }
+    } catch {}
+
+    const onSessionExpired = e => {
       setAuthed(false);
       setRoute([]);
       if (location.hash) location.hash = '';
+      const msg = e?.detail?.message || 'Session expired. Please log in again.';
+      say(msg);
     };
     window.addEventListener('nivaas:session-expired', onSessionExpired);
     return () => window.removeEventListener('nivaas:session-expired', onSessionExpired);
-  }, []);
+  }, [say]);
+
   const go = useCallback(path => { location.hash = '#/' + path.replace(/^\//, ''); }, []);
-  const say = useCallback(t => { setToast(t); clearTimeout(say.t); say.t = setTimeout(() => setToast(''), 3200); }, []);
 
   if (route[0] === 's') return <><SharePage token={route[1]} say={say} />{toast && <div className="toast" role="status">{toast}</div>}</>;
-  if (!authed) return <Login onDone={() => { setAuthed(true); go(''); }} />;
+  if (!authed) return (
+    <>
+      <Login onDone={() => { setAuthed(true); go(''); }} notice={toast} />
+      {toast && <div className="toast" role="status">{toast}</div>}
+    </>
+  );
   return <Shell key={sess} route={route} go={go} say={say} toast={toast} onSwitchRole={r => { api.loginAs(r); location.hash = '#/'; setSess(x => x + 1); }}
     onLogout={() => { api.logout(); setAuthed(false); location.hash = '#/'; }} />;
 }

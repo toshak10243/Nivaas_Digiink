@@ -16,14 +16,24 @@ export default function Bookings({ me, say, go, params }) {
         <Seg value={f} onChange={setF} label="Status" options={[['all', 'All'], ['booked', 'Booked'], ['agreement', 'Agreement'], ['registered', 'Registered'], ['cancelled', 'Cancelled']]} /></div>
       {shown.length === 0 ? <Empty icon="receipt" title="No bookings yet">Book a flat from Inventory.</Empty> : (
         <div className="card tablewrap"><table>
-          <thead><tr><th>Unit</th><th>Buyer</th><th>Sold by</th><th>Broker</th><th>Deal value</th><th>Collected</th><th>Status</th><th>Date</th></tr></thead>
+          <thead><tr><th>Unit</th><th>Buyer</th><th>Sold by</th><th>Broker</th><th>Deal value</th><th>Collected</th><th>Status</th><th>Date</th><th style={{ textAlign: 'right' }}>Actions</th></tr></thead>
           <tbody>{shown.map(b => (
-            <tr key={b.id} onClick={() => go('bookings/' + b.id)}>
+            <tr key={b.id} onClick={() => go('bookings/' + b.id)} style={{ cursor: 'pointer' }}>
               <td><b>{b.unit_no}</b><div className="muted" style={{ fontSize: 12 }}>{b.project_name}</div></td>
               <td>{b.customer_name}<div className="muted mono" style={{ fontSize: 12 }}>{phone(b.customer_phone)}</div></td>
               <td>{b.sold_by_name || '—'}</td><td>{b.broker_name || '—'}</td><td className="num">{money(b.deal_value)}</td>
               <td><div className="paybar"><i style={{ width: `${Math.min(100, (b.paid / b.deal_value) * 100)}%` }} /></div><span className="num muted" style={{ fontSize: 12 }}>{money(b.paid)} · {Math.round((b.paid / b.deal_value) * 100)}%</span></td>
               <td><Pill s={b.status} /></td><td className="time">{date(b.booking_date)}</td>
+              <td style={{ textAlign: 'right' }} onClick={e => e.stopPropagation()}>
+                <button
+                  className="btn sm"
+                  style={{ whiteSpace: 'nowrap', border: '1px solid rgba(99,102,241,0.35)', color: '#4f46e5', background: 'rgba(99,102,241,0.06)' }}
+                  onClick={() => go('bookings/' + b.id)}
+                  title="Zero-dispute Sub-Registrar execution workflow & document verification"
+                >
+                  <Icon name="file" />Registry Day Manager
+                </button>
+              </td>
             </tr>))}</tbody>
         </table></div>
       )}
