@@ -19,13 +19,15 @@ test('date and enum validators reject invalid input', () => {
 });
 
 test('cost sheet and payment schedule calculate expected totals', () => {
-  const project = { rate_sqft: 2500, charges: { parking: 20_000, club: 10_000, maintenance_deposit: 5_000, gst_pct: 5, stamp_pct: 2, registration: 30_000 } };
+  const project = { rate_sqft: 2500, charges: { parking: 20_000, club: 10_000, maintenance_deposit: 5_000, stamp_pct: 2, registration: 30_000 } };
   const type = { super_sqft: 100, payment_plan: [{ milestone: 'Booking', pct: 10 }, { milestone: 'Possession', pct: 90 }] };
   const sheet = costSheet(project, type, { plc_pct: 2 });
   assert.equal(sheet.base, 250_000);
   assert.equal(sheet.plc, 5_000);
-  assert.equal(sheet.total, 304_250);
-  assert.equal(sheet.all_in, 339_350);
+  assert.equal(sheet.registry_pct, 7.5);
+  assert.equal(sheet.registry, 21_375); // 7.5% of base + PLC + parking + club
+  assert.equal(sheet.total, 311_375);
+  assert.equal(sheet.all_in, 346_475);
   assert.deepEqual(scheduleFor(type, 100_000).map(x => x.amount), [10_000, 90_000]);
 });
 
