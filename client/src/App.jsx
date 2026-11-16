@@ -18,6 +18,7 @@ import Settings from './pages/Settings.jsx';
 import Portal from './pages/Portal.jsx';
 import SharePage from './pages/SharePage.jsx';
 import EmiCalculatorModal from './components/EmiCalculatorModal.jsx';
+import ProfileModal from './components/ProfileModal.jsx';
 
 const NAV = {
   admin: [
@@ -132,6 +133,7 @@ function Shell({ route, go, say, toast, onLogout, onSwitchRole }) {
   const [notifs, reloadN] = useLoad(() => api.get('/api/notifications'), []);
   const [bell, setBell] = useState(false);
   const [showEmi, setShowEmi] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   useEffect(() => { const t = setInterval(reloadN, 30000); return () => clearInterval(t); }, [reloadN]);
@@ -143,7 +145,6 @@ function Shell({ route, go, say, toast, onLogout, onSwitchRole }) {
   const executiveDashboard = role === 'admin' && page === 'dashboard';
   const unread = (notifs || []).filter(n => !n.read).length;
   const props = { me, go, say, params: route.slice(1), reloadMe };
-  const theme = () => { const r = document.documentElement; const dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches; r.dataset.theme = dark ? 'light' : 'dark'; };
 
   return (
     <div className={'shell' + (adminWorkspace ? ' nivaas-admin-shell' : '') + (executiveDashboard ? ' admin-dashboard-shell' : '') + (sidebarOpen ? ' sidebar-open' : '')}>
@@ -157,7 +158,9 @@ function Shell({ route, go, say, toast, onLogout, onSwitchRole }) {
         </div>
         <div className="railfoot">
           {role === 'sales' && <Availability me={me} reload={reloadMe} say={say} />}
-          <div className="bizchip"><Avatar name={me.user.name} /><div style={{ minWidth: 0 }}><b>{me.user.name}</b><span>{ROLE_LABEL[role]}</span></div></div>
+          <button type="button" className="bizchip profile-chip" aria-label="View and edit your profile" onClick={() => setShowProfile(true)}>
+            <Avatar name={me.user.name} src={api.media(me.user.profile?.avatar_url)} /><div style={{ minWidth: 0, textAlign: 'left' }}><b>{me.user.name}</b><span>{ROLE_LABEL[role]}</span></div><Icon name="arrow" />
+          </button>
         </div>
       </nav>
       <main className="work">
@@ -166,7 +169,6 @@ function Shell({ route, go, say, toast, onLogout, onSwitchRole }) {
           <div style={{ minWidth: 0 }}><h1>{TITLES[page]}</h1></div><div className="spacer" />
           {adminWorkspace ? <DashboardSearch go={go} /> : api.mode === 'demo' && <DemoSwitch role={role} onSwitch={onSwitchRole} />}
           {!adminWorkspace && <button className="iconbtn" onClick={() => setShowEmi(true)} title="Home Loan EMI Calculator" aria-label="Home Loan EMI Calculator"><Icon name="calc" /></button>}
-          {!adminWorkspace && <button className="iconbtn" onClick={theme} aria-label="Switch theme"><Icon name="moon" /></button>}
           <div style={{ position: 'relative' }}>
             <button className="iconbtn" aria-label="Notifications" onClick={() => { setBell(b => !b); if (!bell && unread) api.post('/api/notifications/read').then(reloadN); }}>
               <Icon name="bell" />{unread > 0 && <span className="dot" />}
@@ -174,8 +176,8 @@ function Shell({ route, go, say, toast, onLogout, onSwitchRole }) {
             {bell && <Bell list={notifs || []} onPick={n => { setBell(false); if (n.link) go(n.link.replace(/^\//, '').replace('share', 'inventory')); }} />}
           </div>
           {adminWorkspace ? <div className="profile-menu-wrap">
-            <button className="dashboard-profile-button" aria-label="Open profile menu" aria-expanded={profileOpen} onClick={() => setProfileOpen(value => !value)}><Avatar name={me.user.name} size="sm" /><Icon name="chevronDown" /></button>
-            {profileOpen && <div className="dashboard-profile-menu"><b>{me.user.name}</b><small>{ROLE_LABEL[role]}</small>{api.mode === 'demo' && <label className="profile-role-switch">View as <select value={role} onChange={event => onSwitchRole(event.target.value)}><option value="admin">Builder admin</option><option value="sales">Sales agent</option><option value="broker">Broker</option><option value="maintenance">Maintenance</option><option value="customer">Home owner</option></select></label>}<button onClick={() => { setProfileOpen(false); setShowEmi(true); }}><Icon name="calc" />Home loan calculator</button><button onClick={() => { setProfileOpen(false); theme(); }}><Icon name="moon" />Switch appearance</button><button className="profile-logout" onClick={onLogout}><Icon name="logout" />Log out</button></div>}
+            <button className="dashboard-profile-button" aria-label="Open profile menu" aria-expanded={profileOpen} onClick={() => setProfileOpen(value => !value)}><Avatar name={me.user.name} size="sm" src={api.media(me.user.profile?.avatar_url)} /><Icon name="chevronDown" /></button>
+            {profileOpen && <div className="dashboard-profile-menu"><b>{me.user.name}</b><small>{ROLE_LABEL[role]}</small>{api.mode === 'demo' && <label className="profile-role-switch">View as <select value={role} onChange={event => onSwitchRole(event.target.value)}><option value="admin">Builder admin</option><option value="sales">Sales agent</option><option value="broker">Broker</option><option value="maintenance">Maintenance</option><option value="customer">Home owner</option></select></label>}<button onClick={() => { setProfileOpen(false); setShowProfile(true); }}><Icon name="user" />My profile</button><button onClick={() => { setProfileOpen(false); setShowEmi(true); }}><Icon name="calc" />Home loan calculator</button><button className="profile-logout" onClick={onLogout}><Icon name="logout" />Log out</button></div>}
           </div> : <button className="iconbtn" aria-label="Log out" onClick={onLogout}><Icon name="logout" /></button>}
         </header>
         <div className="content" key={page + route.join('/')}>
@@ -195,6 +197,7 @@ function Shell({ route, go, say, toast, onLogout, onSwitchRole }) {
         </div>
       </main>
       {showEmi && <EmiCalculatorModal onClose={() => setShowEmi(false)} say={say} />}
+      {showProfile && <ProfileModal me={me} onClose={() => setShowProfile(false)} onSaved={() => { setShowProfile(false); reloadMe(); }} onAvatarSaved={reloadMe} say={say} />}
       {toast && <div className="toast" role="status">{toast}</div>}
     </div>
   );

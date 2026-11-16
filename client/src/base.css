@@ -2,6 +2,7 @@
    Layout: dark ink rail on the left (bottom bar on phones) + a porcelain workspace.
    One bold element per screen gets the saffron→marigold "sun" gradient; everything else stays quiet. */
 :root{
+  color-scheme:light;
   --paper:#F2F3F8; --panel:#FFFFFF; --panel-2:#F7F7FB; --sunk:#ECEDF5;
   --ink:#13152E; --ink-2:#4B4F6E; --ink-3:#868AA6; --line:#E3E4EE; --line-2:#D4D6E4;
   --rail:#13152E; --rail-ink:#E9EAF6; --rail-dim:#8C8FB0; --rail-hi:#23264A;
@@ -17,31 +18,6 @@
   --f-mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
   --r:14px; --r-sm:10px;
 }
-@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
-  --paper:#0B0C1A; --panel:#13152A; --panel-2:#181B33; --sunk:#0F1124;
-  --ink:#F0F1FA; --ink-2:#ABAECB; --ink-3:#71759A; --line:#24274A; --line-2:#30345C;
-  --rail:#07081A; --rail-ink:#E9EAF6; --rail-dim:#7D80A3; --rail-hi:#1B1E3A;
-  --sun:#FF7A2E; --sun-2:#FFBE45; --sun-ink:#1A0C02; --sun-soft:#33200F; --sun-text:#FFA463;
-  --ai:#251B16; --ai-line:#4A3020; --owner:#10291F; --owner-ink:#4FD69E;
-  --hot:#FF6871; --hot-soft:#3A1820; --warm:#FFB547; --warm-soft:#38290F; --cold:#A3A6C4; --cold-soft:#20233F; --new:#8E98FF; --new-soft:#1F2350;
-  --c-wa:#33CC72; --c-ig:#FF5C93; --c-fb:#6E9BFF; --c-form:#FF7A2E; --c-web:#C9CBE6;
-  --ok:#47D497; --ok-soft:#10291F;
-  --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px -12px rgba(0,0,0,.6);
-  --shadow-lg:0 30px 80px -20px rgba(0,0,0,.7);
-  color-scheme:dark }}
-:root[data-theme="dark"]{
-  --paper:#0B0C1A; --panel:#13152A; --panel-2:#181B33; --sunk:#0F1124;
-  --ink:#F0F1FA; --ink-2:#ABAECB; --ink-3:#71759A; --line:#24274A; --line-2:#30345C;
-  --rail:#07081A; --rail-ink:#E9EAF6; --rail-dim:#7D80A3; --rail-hi:#1B1E3A;
-  --sun:#FF7A2E; --sun-2:#FFBE45; --sun-ink:#1A0C02; --sun-soft:#33200F; --sun-text:#FFA463;
-  --ai:#251B16; --ai-line:#4A3020; --owner:#10291F; --owner-ink:#4FD69E;
-  --hot:#FF6871; --hot-soft:#3A1820; --warm:#FFB547; --warm-soft:#38290F; --cold:#A3A6C4; --cold-soft:#20233F; --new:#8E98FF; --new-soft:#1F2350;
-  --c-wa:#33CC72; --c-ig:#FF5C93; --c-fb:#6E9BFF; --c-form:#FF7A2E; --c-web:#C9CBE6;
-  --ok:#47D497; --ok-soft:#10291F;
-  --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px -12px rgba(0,0,0,.6);
-  --shadow-lg:0 30px 80px -20px rgba(0,0,0,.7);
-  color-scheme:dark }
-
 *{box-sizing:border-box}
 html,body,#root{height:100%}
 body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
@@ -114,6 +90,7 @@ h1,h2,h3{font-family:var(--f-display);margin:0;letter-spacing:-.02em;text-wrap:b
 .card-b{padding:16px 18px 18px}
 .eyebrow{font-size:11px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3)}
 .av{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;flex:none;font-weight:600;font-size:14px;background:var(--sunk);color:var(--ink-2);border:1px solid var(--line);position:relative}
+.av img{width:100%;height:100%;border-radius:inherit;object-fit:cover}
 .av.lg{width:52px;height:52px;font-size:18px}
 .av .chdot{position:absolute;right:-2px;bottom:-2px;width:16px;height:16px;border-radius:50%;border:2px solid var(--panel);display:grid;place-items:center}
 .av .chdot svg{width:9px;height:9px;color:#fff}

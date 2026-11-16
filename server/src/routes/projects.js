@@ -33,13 +33,22 @@ function matchesFileType(mime, b) {
   return false;
 }
 
+const diskStorage = multer.diskStorage({
+  destination: (req, _f, cb) => { const d = path.join(config.uploadDir, req.user.org); fs.mkdirSync(d, { recursive: true }); cb(null, d); },
+  filename: (_req, f, cb) => cb(null, crypto.randomUUID() + (MIME_EXT[f.mimetype] || '.bin')),
+});
 export const upload = multer({
-  storage: multer.diskStorage({
-    destination: (req, _f, cb) => { const d = path.join(config.uploadDir, req.user.org); fs.mkdirSync(d, { recursive: true }); cb(null, d); },
-    filename: (_req, f, cb) => cb(null, crypto.randomUUID() + (MIME_EXT[f.mimetype] || '.bin')),
-  }),
+  storage: diskStorage,
   limits: { fileSize: config.maxUploadMb * 1024 * 1024 },
   fileFilter: (_req, f, cb) => cb(ALLOWED.test(f.mimetype) ? null : Object.assign(new Error('Only photos, videos and PDFs are allowed'), { status: 400 }), ALLOWED.test(f.mimetype)),
+});
+export const avatarUpload = multer({
+  storage: diskStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, f, cb) => {
+    const allowed = ['image/jpeg', 'image/png', 'image/webp'].includes(f.mimetype);
+    cb(allowed ? null : Object.assign(new Error('Profile pictures must be JPG, PNG, or WebP images'), { status: 400 }), allowed);
+  },
 });
 
 export async function verifyUploadedFiles(req, _res, next) {

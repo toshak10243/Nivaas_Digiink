@@ -204,7 +204,8 @@ const on = (method, pattern, fn) => routes.push({ method, re: new RegExp('^' + p
 const need = (...roles) => { if (!roles.includes(me.role)) throw err(403, 'You do not have access to this'); };
 
 on('GET', '/api/me', () => ({ user: { ...clone(me), whatsapp: waNumbers.find(w => w.user_id === me.id) || null }, org: clone({ ...org, bridge_secret: undefined }), publicUrl: location.origin }));
-on('PATCH', '/api/me/profile', (_, b) => { if (b.availability) me.profile.availability = b.availability; if (b.ai_twin) me.profile.ai_twin = { ...me.profile.ai_twin, ...b.ai_twin }; return clone(me); });
+on('PATCH', '/api/me/profile', (_, b) => { if (b.name !== undefined) me.name = b.name.trim(); if (b.email !== undefined) me.email = b.email.trim().toLowerCase(); if (b.phone !== undefined) me.phone = b.phone.trim(); if (b.availability) me.profile.availability = b.availability; if (b.ai_twin) me.profile.ai_twin = { ...me.profile.ai_twin, ...b.ai_twin }; return clone(me); });
+on('POST', '/api/me/avatar', (_, b) => { const file = b.getAll?.('files')?.[0]; if (!file || !file.type.startsWith('image/') || file.size > 5 * 1024 * 1024) throw err(400, 'Choose a JPG, PNG, or WebP image up to 5 MB'); me.profile.avatar_url = URL.createObjectURL(file); return { avatar_url: me.profile.avatar_url, profile: clone(me.profile) }; });
 
 on('GET', '/api/dashboard', () => {
   const month = new Date().toISOString().slice(0, 7);

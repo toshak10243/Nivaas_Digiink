@@ -37,7 +37,6 @@ const paths = {
   eye: <><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></>,
   lock: <><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 018 0v4" /></>,
   logout: <><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4" /><path d="M16 17l5-5-5-5M21 12H9" /></>,
-  moon: <path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z" />,
   image: <><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="9" cy="10" r="2" /><path d="M21 16l-5-5-9 9" /></>,
   play: <path d="M7 4l13 8-13 8z" />,
   camera: <><path d="M4 7h3l2-3h6l2 3h3v13H4z" /><circle cx="12" cy="13" r="4" /></>,
@@ -85,9 +84,9 @@ export function Logo({ size = 34, className = '', style = {} }) {
 
 export const initials = n => (n || '#').replace(/[^A-Za-zऀ-ॿ ]/g, '').split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '#';
 const HUES = ['#E8EAFE', '#FFF0E3', '#E2F6EC', '#FDE9EA', '#EEF1F7', '#FFF2D9'];
-export function Avatar({ name, size, tone }) {
+export function Avatar({ name, size, tone, src }) {
   const h = HUES[(name || '').split('').reduce((a, c) => a + c.charCodeAt(0), 0) % HUES.length];
-  return <div className={'av' + (size === 'lg' ? ' lg' : size === 'sm' ? ' sm' : '')} style={tone !== false ? { background: h, borderColor: 'transparent', color: '#2b2f52' } : undefined}>{initials(name)}</div>;
+  return <div className={'av' + (size === 'lg' ? ' lg' : size === 'sm' ? ' sm' : '')} style={tone !== false ? { background: h, borderColor: 'transparent', color: '#2b2f52' } : undefined}>{src ? <img src={src} alt="" /> : initials(name)}</div>;
 }
 
 const STATUS = {

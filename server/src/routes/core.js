@@ -7,6 +7,7 @@ import { h, allow, fail } from '../lib/auth.js';
 import { settingsOf, merge } from '../settings.js';
 import { config } from '../config.js';
 import { maskPhoneRows } from '../lib/privacy.js';
+import { avatarUpload, fileUrl, verifyUploadedFiles } from './projects.js';
 
 const r = Router();
 const USER_COLS = 'id, role, name, email, phone, active, profile, last_login, created_at';
@@ -21,13 +22,33 @@ r.get('/me', h(async (req, res) => {
 
 /** Sales agents set their own availability and AI twin. */
 r.patch('/me/profile', h(async (req, res) => {
-  const { availability, ai_twin, phone } = req.body || {};
+  const { availability, ai_twin } = req.body || {};
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : null;
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : null;
+  const phone = typeof req.body?.phone === 'string' ? req.body.phone.trim() : null;
+  if (name !== null && !name) throw fail(400, 'Name is required');
+  if (email !== null && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw fail(400, 'Enter a valid email address');
+  if (phone !== null && phone && String(phone).replace(/\D/g, '').length < 7) throw fail(400, 'Enter a valid phone number');
   const u = await one(`SELECT profile FROM users WHERE id = $1`, [req.user.id]);
+  if (email) {
+    const duplicate = await one(`SELECT id FROM users WHERE org_id = $1 AND lower(email) = $2 AND id <> $3`, [req.user.org, email, req.user.id]);
+    if (duplicate) throw fail(409, 'That email address is already used by another account in this company');
+  }
   const profile = { ...u.profile };
   if (availability) profile.availability = availability;
   if (ai_twin) profile.ai_twin = { ...(profile.ai_twin || {}), ...ai_twin };
-  const row = await one(`UPDATE users SET profile = $2, phone = COALESCE($3, phone) WHERE id = $1 RETURNING ${USER_COLS}`, [req.user.id, profile, phone || null]);
+  const row = await one(`UPDATE users SET profile = $2, name = COALESCE($3, name), email = COALESCE($4, email), phone = COALESCE($5, phone) WHERE id = $1 RETURNING ${USER_COLS}`,
+    [req.user.id, profile, name || null, email || null, phone || null]);
   res.json(row);
+}));
+
+r.post('/me/avatar', avatarUpload.array('files', 1), verifyUploadedFiles, h(async (req, res) => {
+  const file = req.files?.[0];
+  if (!file) throw fail(400, 'Choose a profile picture to upload');
+  const u = await one(`SELECT profile FROM users WHERE id = $1`, [req.user.id]);
+  const profile = { ...u.profile, avatar_url: fileUrl(req, file) };
+  const row = await one(`UPDATE users SET profile = $2 WHERE id = $1 RETURNING ${USER_COLS}`, [req.user.id, profile]);
+  res.json({ avatar_url: profile.avatar_url, profile: row.profile });
 }));
 
 // ---------- Dashboard ----------
