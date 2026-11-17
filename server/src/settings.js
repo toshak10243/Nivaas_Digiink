@@ -23,3 +23,36 @@ export function merge(base, over) {
   return out;
 }
 export const settingsOf = org => merge(DEFAULTS, org?.settings || {});
+
+// Validate partial settings updates before merging them into persisted org data.
+export function validateSettings(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw Object.assign(new Error('Settings must be an object'), { status: 400 });
+  const fail = message => { throw Object.assign(new Error(message), { status: 400 }); };
+  const out = {};
+  const enums = { 'routing.assign_on': ['qualified', 'immediately'], 'routing.strategy': ['least_loaded', 'round_robin'] };
+  const ranges = {
+    'routing.first_response_min': [1, 1440], 'tickets.sla_hours': [1, 720], 'tickets.urgent_sla_hours': [1, 720],
+    'holds.hours': [1, 720], 'booking.default_booking_pct': [0, 100], 'emi.rate': [0, 100],
+    'emi.tenure_years': [1, 50], 'emi.down_pct': [0, 100]
+  };
+  for (const [section, values] of Object.entries(input)) {
+    if (!Object.hasOwn(DEFAULTS, section) || !values || typeof values !== 'object' || Array.isArray(values)) fail(`Unknown or invalid settings section: ${section}`);
+    out[section] = {};
+    for (const [key, value] of Object.entries(values)) {
+      const path = `${section}.${key}`;
+      if (!Object.hasOwn(DEFAULTS[section], key)) fail(`Unknown setting: ${path}`);
+      if (enums[path]) {
+        if (!enums[path].includes(value)) fail(`${path} must be one of: ${enums[path].join(', ')}`);
+        out[section][key] = value;
+      } else if (ranges[path]) {
+        const [min, max] = ranges[path];
+        if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) fail(`${path} must be a number from ${min} to ${max}`);
+        out[section][key] = value;
+      } else if (typeof DEFAULTS[section][key] === 'boolean') {
+        if (typeof value !== 'boolean') fail(`${path} must be true or false`);
+        out[section][key] = value;
+      } else fail(`Unsupported setting: ${path}`);
+    }
+  }
+  return out;
+}

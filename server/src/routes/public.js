@@ -8,11 +8,17 @@ import { notify, logLead } from '../services/notify.js';
 import { assignLead } from '../services/routing.js';
 import { normPhone } from '../services/meta.js';
 import { rateLimit } from '../lib/rate-limit.js';
+import { phone as validPhone, email as validEmail, futureDateTime, text, uuid } from '../lib/validate.js';
 
 const r = Router();
 
+function validateShareToken(value) {
+  if (typeof value !== 'string' || !/^[a-f0-9]{16}$/i.test(value)) throw fail(400, 'Share token is invalid');
+}
+
 // ---------- /p/:token — what the customer sees when they open a shared link ----------
 r.get('/p/:token', h(async (req, res) => {
+  validateShareToken(req.params.token);
   const link = await one(`SELECT * FROM share_links WHERE token = $1`, [req.params.token]);
   if (!link) throw fail(404, 'This link has expired or is not valid');
   const org = await one(`SELECT name, logo_url, phone, address, rera_promoter, settings FROM orgs WHERE id = $1`, [link.org_id]);
@@ -43,25 +49,31 @@ r.get('/p/:token', h(async (req, res) => {
 }));
 
 r.post('/p/:token/enquire', rateLimit({ windowMs: 10 * 60_000, limit: 8, key: req => `enquire:${req.ip}:${req.params.token}`, message: 'Too many enquiries from this connection. Try again in a few minutes.' }), h(async (req, res) => {
+  validateShareToken(req.params.token);
   const link = await one(`SELECT s.*, u.role FROM share_links s JOIN users u ON u.id = s.created_by WHERE s.token = $1`, [req.params.token]);
   if (!link) throw fail(404, 'This link has expired');
   const { name, phone, message, unit_no, visit } = req.body || {};
-  const ph = normPhone(phone);
-  if (!name || ph.length < 10) throw fail(400, 'Please enter your name and a valid mobile number');
-  const unit = unit_no ? await one(`SELECT id FROM units WHERE project_id = $1 AND unit_no = $2`, [link.project_id, unit_no]) : null;
+  const cleanName = text(name, 'Name', { optional: false, max: 160 });
+  const ph = normPhone(validPhone(phone, 'Mobile number', { optional: false }));
+  if (ph.length < 10) throw fail(400, 'Please enter a valid mobile number');
+  const cleanMessage = message === undefined || message === null || message === '' ? null : text(message, 'Message', { max: 2000 });
+  const cleanUnitNo = unit_no ? text(unit_no, 'Unit number', { optional: false, max: 80 }) : null;
+  const cleanVisit = visit ? text(visit, 'Visit preference', { optional: false, max: 120 }) : null;
+  const unit = cleanUnitNo ? await one(`SELECT id FROM units WHERE project_id = $1 AND unit_no = $2`, [link.project_id, cleanUnitNo]) : null;
+  if (cleanUnitNo && !unit) throw fail(400, 'Selected unit does not belong to this project');
   let lead = link.lead_id ? await one(`SELECT * FROM leads WHERE id = $1`, [link.lead_id]) : await one(`SELECT * FROM leads WHERE org_id = $1 AND phone = $2 AND stage <> 'lost'`, [link.org_id, ph]);
   if (!lead) {
     lead = await one(`INSERT INTO leads (org_id, project_id, name, phone, source, source_ref, unit_id, assigned_to, assigned_at, broker_id, stage, notes, temperature)
                       VALUES ($1,$2,$3,$4,'share_link',$5,$6,$7,now(),$8,'qualified',$9,'hot') RETURNING *`,
-      [link.org_id, link.project_id, name, ph, link.token, unit?.id || null, link.role === 'admin' ? null : link.created_by, link.role === 'broker' ? link.created_by : null, message || null]);
-    await logLead(lead.id, null, 'created', `Enquired from a shared link${unit_no ? ' for ' + unit_no : ''}`);
+      [link.org_id, link.project_id, cleanName, ph, link.token, unit?.id || null, link.role === 'admin' ? null : link.created_by, link.role === 'broker' ? link.created_by : null, cleanMessage]);
+    await logLead(lead.id, null, 'created', `Enquired from a shared link${cleanUnitNo ? ' for ' + cleanUnitNo : ''}`);
     if (!lead.assigned_to) await assignLead(lead.id);
   } else {
     await q(`UPDATE leads SET unit_id = COALESCE($2, unit_id), temperature = 'hot', updated_at = now() WHERE id = $1`, [lead.id, unit?.id || null]);
-    await logLead(lead.id, null, 'note', `Enquired again from the link${unit_no ? ' about ' + unit_no : ''}${message ? ': ' + message : ''}`);
+    await logLead(lead.id, null, 'note', `Enquired again from the link${cleanUnitNo ? ' about ' + cleanUnitNo : ''}${cleanMessage ? ': ' + cleanMessage : ''}`);
   }
-  if (visit) await logLead(lead.id, null, 'note', `Wants a site visit: ${visit}`);
-  await notify(link.org_id, lead.assigned_to || link.created_by, 'lead', `${name} enquired${unit_no ? ' about ' + unit_no : ''} from your link. Call ${ph}`, `/leads/${lead.id}`);
+  if (cleanVisit) await logLead(lead.id, null, 'note', `Wants a site visit: ${cleanVisit}`);
+  await notify(link.org_id, lead.assigned_to || link.created_by, 'lead', `${cleanName} enquired${cleanUnitNo ? ' about ' + cleanUnitNo : ''} from your link. Call ${ph}`, `/leads/${lead.id}`);
   res.json({ ok: true });
 }));
 
@@ -69,28 +81,49 @@ r.post('/p/:token/enquire', rateLimit({ windowMs: 10 * 60_000, limit: 8, key: re
 // In LeadSathi: Settings → Integrations → Webhook URL = the URL shown in Nivaas → Integrations.
 // LeadSathi posts {event: 'new_lead'|'hot_lead', lead: {id, name, phone, tag, summary, lead_fields, channel_type}}
 r.post('/bridge/leadsathi/:orgId', h(async (req, res) => {
+  uuid(req.params.orgId, 'Organization ID');
   const org = await one(`SELECT * FROM orgs WHERE id = $1`, [req.params.orgId]);
   if (!org || (req.query.secret || req.get('x-nivaas-secret')) !== org.bridge_secret) throw fail(401, 'Bad secret');
   const { event, lead: L = {} } = req.body || {};
+  if (!['new_lead', 'hot_lead'].includes(event)) throw fail(400, 'Unknown LeadSathi event');
+  if (!L || typeof L !== 'object' || Array.isArray(L)) throw fail(400, 'Lead data must be an object');
   const f = L.lead_fields || {};
-  const phone = normPhone(L.phone || f.phone);
+  if (!f || typeof f !== 'object' || Array.isArray(f)) throw fail(400, 'Lead fields must be an object');
+  const rawPhone = L.phone || f.phone;
+  const phone = rawPhone ? normPhone(validPhone(rawPhone, 'Lead phone', { optional: false })) : '';
   if (!phone) return res.json({ ok: true, skipped: 'no phone yet' });
+  if (phone.length < 10) throw fail(400, 'Lead phone is invalid');
+  const leadName = L.name === undefined || L.name === null || L.name === '' ? null : text(L.name, 'Lead name', { max: 160 });
+  const summary = L.summary === undefined || L.summary === null || L.summary === '' ? null : text(L.summary, 'Lead summary', { max: 4000 });
+  const leadEmail = f.email === undefined || f.email === null || f.email === '' ? null : validEmail(f.email, 'Lead email', { optional: false });
+  const leadBudget = optionalBridgeText(f.budget, 'Lead budget', 100);
+  const leadConfig = optionalBridgeText(f.config || f.configuration, 'Configuration preference', 120);
+  const leadPurpose = optionalBridgeText(f.purpose, 'Purpose', 80);
+  const leadTimeline = optionalBridgeText(f.timeline, 'Timeline', 100);
+  const leadProject = optionalBridgeText(f.project, 'Project hint', 160);
+  const leadLocation = optionalBridgeText(f.location, 'Location hint', 160);
+  const reference = L.id ? text(L.id, 'LeadSathi reference', { max: 200 }) : null;
+  const channel = L.channel_type ? text(L.channel_type, 'Channel type', { max: 80 }) : 'chat';
+  const tag = L.tag ? text(L.tag, 'Lead tag', { max: 60 }).toLowerCase() : '';
+  const visitText = optionalBridgeText(f.visit, 'Visit preference', 160);
+  const visitAt = visitText && /^\d{4}-\d{2}-\d{2}T/.test(visitText) ? futureDateTime(visitText, 'Requested visit time') : null;
   const projects = await many(`SELECT id, name FROM projects WHERE org_id = $1`, [org.id]);
-  const hint = `${f.project || ''} ${f.location || ''} ${L.summary || ''}`.toLowerCase();
+  const hint = `${leadProject || ''} ${leadLocation || ''} ${summary || ''}`.toLowerCase();
   const project = projects.find(p => hint.includes(p.name.toLowerCase().split(' ')[0])) || projects[0];
-  const temp = L.tag === 'hot' ? 'hot' : L.tag === 'cold' ? 'cold' : 'warm';
-  const qualified = event === 'hot_lead' || L.tag === 'hot';
+  const temp = tag === 'hot' ? 'hot' : tag === 'cold' ? 'cold' : 'warm';
+  const qualified = event === 'hot_lead' || tag === 'hot';
   let lead = await one(`SELECT * FROM leads WHERE org_id = $1 AND phone = $2 AND stage <> 'lost'`, [org.id, phone]);
   if (!lead) {
-    lead = await one(`INSERT INTO leads (org_id, project_id, name, phone, source, source_ref, stage, temperature, budget, config_pref, purpose, timeline, ai_summary)
-                      VALUES ($1,$2,$3,$4,'leadsathi',$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
-      [org.id, project?.id || null, L.name || null, phone, L.id || null, qualified ? 'qualified' : 'contacted', temp, f.budget || null, f.config || f.configuration || null, f.purpose || null, f.timeline || null, L.summary || null]);
-    await logLead(lead.id, null, 'created', `From LeadSathi AI (${L.channel_type || 'chat'})`);
+    lead = await one(`INSERT INTO leads (org_id, project_id, name, phone, email, source, source_ref, stage, temperature, budget, config_pref, purpose, timeline, ai_summary)
+                      VALUES ($1,$2,$3,$4,$5,'leadsathi',$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+      [org.id, project?.id || null, leadName, phone, leadEmail, reference, qualified ? 'qualified' : 'contacted', temp, leadBudget, leadConfig, leadPurpose, leadTimeline, summary]);
+    await logLead(lead.id, null, 'created', `From LeadSathi AI (${channel})`);
   } else {
-    lead = await one(`UPDATE leads SET name = CASE WHEN (source='leadsathi' AND source_ref=$10) OR lower(COALESCE(name,'')) IN ('test customer','customer','unknown') THEN COALESCE(NULLIF($2,''),name) ELSE COALESCE(name,NULLIF($2,'')) END, temperature = $3, budget = COALESCE($4,budget), config_pref = COALESCE($5,config_pref), purpose = COALESCE($6,purpose),
-                        timeline = COALESCE($7,timeline), ai_summary = COALESCE($8,ai_summary), stage = CASE WHEN $9 AND stage IN ('new','contacted') THEN 'qualified' ELSE stage END, updated_at = now()
-                      WHERE id = $1 RETURNING *`, [lead.id, L.name || null, temp, f.budget || null, f.config || f.configuration || null, f.purpose || null, f.timeline || null, L.summary || null, qualified, L.id || null]);
-    await logLead(lead.id, null, 'ai', `LeadSathi: ${L.summary || event}`);
+    lead = await one(`UPDATE leads SET name = CASE WHEN (source='leadsathi' AND source_ref=$11) OR lower(COALESCE(name,'')) IN ('test customer','customer','unknown') THEN COALESCE(NULLIF($2,''),name) ELSE COALESCE(name,NULLIF($2,'')) END,
+                        email = COALESCE($3,email), temperature = $4, budget = COALESCE($5,budget), config_pref = COALESCE($6,config_pref), purpose = COALESCE($7,purpose),
+                        timeline = COALESCE($8,timeline), ai_summary = COALESCE($9,ai_summary), stage = CASE WHEN $10 AND stage IN ('new','contacted') THEN 'qualified' ELSE stage END, updated_at = now()
+                      WHERE id = $1 RETURNING *`, [lead.id, leadName, leadEmail, temp, leadBudget, leadConfig, leadPurpose, leadTimeline, summary, qualified, reference]);
+    await logLead(lead.id, null, 'ai', `LeadSathi: ${summary || event}`);
   }
   const s = settingsOf(org).routing;
   if (!lead.assigned_to && (s.assign_on === 'immediately' || lead.stage !== 'contacted')) {
@@ -98,8 +131,8 @@ r.post('/bridge/leadsathi/:orgId', h(async (req, res) => {
     lead = await one('SELECT * FROM leads WHERE id=$1',[lead.id]);
   } else if (!lead.assigned_to) await notify(org.id, null, 'lead', `New lead from LeadSathi: ${lead.name || phone}`, `/leads/${lead.id}`);
   // A requested slot is scheduled pending confirmation, never marked confirmed.
-  const at = typeof f.visit === 'string' && /T\d{2}:\d{2}.*(?:Z|[+-]\d{2}:\d{2})$/.test(f.visit) ? new Date(f.visit) : null;
-  if (at && !isNaN(at) && at > new Date()) {
+  const at = visitAt ? new Date(visitAt) : null;
+  if (at) {
     const active = await one("SELECT id FROM site_visits WHERE lead_id=$1 AND status IN ('scheduled','confirmed')",[lead.id]);
     if (!active) {
       await q(`INSERT INTO site_visits(org_id,lead_id,project_id,agent_id,scheduled_at) VALUES ($1,$2,$3,$4,$5)`,[org.id,lead.id,lead.project_id,lead.assigned_to,at]);
@@ -109,5 +142,9 @@ r.post('/bridge/leadsathi/:orgId', h(async (req, res) => {
   }
   res.json({ ok: true, lead_id: lead.id });
 }));
+
+function optionalBridgeText(value, label, max) {
+  return value === undefined || value === null || value === '' ? null : text(value, label, { optional: false, max });
+}
 
 export default r;

@@ -123,7 +123,7 @@ function BookingDrawer({ id, me, say, onClose, onChange }) {
         {b.status === 'booked' && <button className="btn" onClick={() => status('agreement')}>Agreement signed</button>}
         {['booked', 'agreement'].includes(b.status) && <button className="btn" onClick={() => status('registered')}>Registered</button>}
         {b.status === 'registered' && <button className="btn" onClick={() => status('possession')}>Possession given</button>}
-        {b.status !== 'cancelled' && <button className="btn ghost danger" onClick={() => status('cancelled')}>Cancel booking</button>}
+        {['booked', 'agreement'].includes(b.status) && <button className="btn ghost danger" onClick={() => status('cancelled')}>Cancel booking</button>}
       </div>}
 
       {docModal && (

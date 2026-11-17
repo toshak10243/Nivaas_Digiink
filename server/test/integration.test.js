@@ -161,7 +161,10 @@ after(async () => {
     const exited = new Promise(resolve => serverProcess.once('exit', resolve));
     serverProcess.kill('SIGTERM');
     await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 5_000))]);
-    if (serverProcess.exitCode === null) serverProcess.kill();
+    if (serverProcess.exitCode === null) {
+      serverProcess.kill('SIGKILL');
+      await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 1_000))]);
+    }
   }
   await fixturePool?.end();
   if (schema && controlPool) await controlPool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
@@ -172,6 +175,46 @@ after(async () => {
 test('API regression flows: authorization, privacy, booking, payments, tickets, sharing, and integration failures', async t => {
   const unauthenticated = await api('/api/me');
   assert.equal(unauthenticated.response.status, 401);
+
+  // Access tokens must not be accepted by the refresh endpoint, and malformed
+  // writes must fail before changing their corresponding records.
+  const accessTokenRefresh = await api('/auth/refresh', { method: 'POST', body: { refreshToken: tokens.admin } });
+  assert.equal(accessTokenRefresh.response.status, 401);
+  const login = await api('/auth/login', { method: 'POST', body: { email: fixtures.users.admin.email, password: 'IntegrationPass123' } });
+  assert.equal(login.response.status, 200);
+  const refresh = await api('/auth/refresh', { method: 'POST', body: { refreshToken: login.data.refreshToken } });
+  assert.equal(refresh.response.status, 200);
+
+  const leadCountBeforeInvalid = Number((await fixturePool.query('SELECT count(*) FROM leads WHERE org_id = $1', [fixtures.org.id])).rows[0].count);
+  const invalidLead = await api('/api/leads', {
+    token: tokens.admin, method: 'POST',
+    body: { name: 'Invalid Phone Lead', phone: 'not-a-phone', email: 'bad-email' },
+  });
+  assert.equal(invalidLead.response.status, 400);
+  assert.equal(Number((await fixturePool.query('SELECT count(*) FROM leads WHERE org_id = $1', [fixtures.org.id])).rows[0].count), leadCountBeforeInvalid);
+
+  const invalidVisit = await api('/api/visits', {
+    token: tokens.admin, method: 'POST',
+    body: { name: 'Invalid Walk-in', phone: '919940000001', scheduled_at: '2020-02-30T10:00:00Z' },
+  });
+  assert.equal(invalidVisit.response.status, 400);
+  assert.equal(Number((await fixturePool.query('SELECT count(*) FROM leads WHERE org_id = $1', [fixtures.org.id])).rows[0].count), leadCountBeforeInvalid,
+    'a rejected walk-in visit must not leave a partial lead behind');
+
+  const orgBeforeInvalidSettings = await fixturePool.query('SELECT name, settings FROM orgs WHERE id = $1', [fixtures.org.id]);
+  const invalidSettings = await api('/api/org', {
+    token: tokens.admin, method: 'PUT', body: { name: 'Should Not Persist', settings: { unknown_option: true } },
+  });
+  assert.equal(invalidSettings.response.status, 400);
+  const orgAfterInvalidSettings = await fixturePool.query('SELECT name, settings FROM orgs WHERE id = $1', [fixtures.org.id]);
+  assert.deepEqual(orgAfterInvalidSettings.rows[0], orgBeforeInvalidSettings.rows[0]);
+
+  const badUnitType = await api(`/api/projects/${fixtures.project.id}/unit-types`, {
+    token: tokens.admin, method: 'POST',
+    body: { name: 'Invalid Type', bhk: 2.5, carpet_sqft: 100, builtup_sqft: 90, super_sqft: 120 },
+  });
+  assert.equal(badUnitType.response.status, 400);
+  assert.equal(Number((await fixturePool.query('SELECT count(*) FROM unit_types WHERE project_id = $1', [fixtures.project.id])).rows[0].count), 1);
 
   const forbiddenProjects = await api('/api/projects', { token: tokens.customerOne });
   assert.equal(forbiddenProjects.response.status, 403);
@@ -190,6 +233,14 @@ test('API regression flows: authorization, privacy, booking, payments, tickets, 
   assert.match(fallbackDraft.data.reviewNotice, /Confirm factual/);
 
   const bookingBody = unitId => ({ unit_id: unitId, customer_name: 'Customer One', customer_email: fixtures.users.customerOne.email, customer_phone: '919920000001', booking_amount: 0 });
+  const invalidBooking = await api('/api/bookings', {
+    token: tokens.admin, method: 'POST',
+    body: { ...bookingBody(fixtures.units['T-102']), customer_email: 'invalid-email', booking_amount: 0 },
+  });
+  assert.equal(invalidBooking.response.status, 400);
+  assert.equal((await fixturePool.query('SELECT status FROM units WHERE id = $1', [fixtures.units['T-102']])).rows[0].status, 'available');
+  assert.equal(Number((await fixturePool.query('SELECT count(*) FROM bookings WHERE unit_id = $1', [fixtures.units['T-102']])).rows[0].count), 0);
+
   const bookingAttempts = await Promise.all([
     api('/api/bookings', { token: tokens.salesOne, method: 'POST', body: bookingBody(fixtures.units['T-101']) }),
     api('/api/bookings', { token: tokens.salesTwo, method: 'POST', body: bookingBody(fixtures.units['T-101']) }),
@@ -199,6 +250,18 @@ test('API regression flows: authorization, privacy, booking, payments, tickets, 
   assert.equal(accepted.length, 1, 'Exactly one concurrent booking should succeed');
   assert.equal(conflicts.length, 1, 'The competing booking should receive a conflict');
   const booking = accepted[0].data;
+
+  const skippedBookingStatus = await api(`/api/bookings/${booking.id}`, {
+    token: tokens.admin, method: 'PATCH', body: { status: 'possession' },
+  });
+  assert.equal(skippedBookingStatus.response.status, 409);
+  const bookingBeforeInvalidChecklist = await fixturePool.query('SELECT status, registry_checklist FROM bookings WHERE id = $1', [booking.id]);
+  const invalidRegistryChecklist = await api(`/api/bookings/${booking.id}`, {
+    token: tokens.admin, method: 'PATCH', body: { registry_checklist: { stamp_duty_paid: 'yes' } },
+  });
+  assert.equal(invalidRegistryChecklist.response.status, 400);
+  const unchangedBooking = await fixturePool.query('SELECT status, registry_checklist FROM bookings WHERE id = $1', [booking.id]);
+  assert.deepEqual(unchangedBooking.rows[0], bookingBeforeInvalidChecklist.rows[0]);
 
   const overpayment = await api(`/api/bookings/${booking.id}/payments`, {
     token: tokens.admin, method: 'POST', body: { amount: Number(booking.deal_value) + 1, mode: 'UPI' },

@@ -4,13 +4,19 @@ import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import { one, many, q } from '../db.js';
 import { h, allow, fail } from '../lib/auth.js';
-import { settingsOf, merge } from '../settings.js';
+import { settingsOf, merge, validateSettings } from '../settings.js';
 import { config } from '../config.js';
 import { maskPhoneRows } from '../lib/privacy.js';
 import { avatarUpload, fileUrl, verifyUploadedFiles } from './projects.js';
+import { email as validEmail, phone as validPhone, text, number, oneOf, record, uuid } from '../lib/validate.js';
 
 const r = Router();
 const USER_COLS = 'id, role, name, email, phone, active, profile, last_login, created_at';
+
+async function assertOrgUser(id, org, roles) {
+  const user = await one(`SELECT id, role, active FROM users WHERE id = $1 AND org_id = $2`, [id, org]);
+  if (!user || !user.active || (roles && !roles.includes(user.role))) throw fail(400, 'Selected team member must be active and belong to this organization');
+}
 
 r.get('/me', h(async (req, res) => {
   const user = await one(`SELECT ${USER_COLS} FROM users WHERE id = $1`, [req.user.id]);
@@ -23,12 +29,14 @@ r.get('/me', h(async (req, res) => {
 /** Sales agents set their own availability and AI twin. */
 r.patch('/me/profile', h(async (req, res) => {
   const { availability, ai_twin } = req.body || {};
-  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : null;
-  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : null;
-  const phone = typeof req.body?.phone === 'string' ? req.body.phone.trim() : null;
-  if (name !== null && !name) throw fail(400, 'Name is required');
-  if (email !== null && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw fail(400, 'Enter a valid email address');
-  if (phone !== null && phone && String(phone).replace(/\D/g, '').length < 7) throw fail(400, 'Enter a valid phone number');
+  const body = req.body || {};
+  const allowed = ['name', 'email', 'phone', 'availability', 'ai_twin'];
+  if (Object.keys(body).some(k => !allowed.includes(k))) throw fail(400, 'Unsupported profile field');
+  const name = body.name === undefined ? null : text(body.name, 'Name', { optional: false, max: 160 });
+  const email = body.email === undefined ? null : validEmail(body.email, 'Email', { optional: false });
+  const phone = body.phone === undefined ? null : validPhone(body.phone, 'Phone');
+  if (availability !== undefined) oneOf(availability, 'Availability', ['available', 'busy', 'away'], { optional: false });
+  const safeAiTwin = ai_twin === undefined ? undefined : validateAiTwin(ai_twin);
   const u = await one(`SELECT profile FROM users WHERE id = $1`, [req.user.id]);
   if (email) {
     const duplicate = await one(`SELECT id FROM users WHERE org_id = $1 AND lower(email) = $2 AND id <> $3`, [req.user.org, email, req.user.id]);
@@ -36,7 +44,7 @@ r.patch('/me/profile', h(async (req, res) => {
   }
   const profile = { ...u.profile };
   if (availability) profile.availability = availability;
-  if (ai_twin) profile.ai_twin = { ...(profile.ai_twin || {}), ...ai_twin };
+  if (safeAiTwin) profile.ai_twin = { ...(profile.ai_twin || {}), ...safeAiTwin };
   const row = await one(`UPDATE users SET profile = $2, name = COALESCE($3, name), email = COALESCE($4, email), phone = COALESCE($5, phone) WHERE id = $1 RETURNING ${USER_COLS}`,
     [req.user.id, profile, name || null, email || null, phone || null]);
   res.json(row);
@@ -115,6 +123,7 @@ r.post('/notifications/read', h(async (req, res) => {
 // ---------- Team (admin) ----------
 r.get('/team', h(async (req, res) => {
   const role = req.query.role;
+  if (role !== undefined && !['admin', 'sales', 'broker', 'maintenance', 'customer'].includes(role)) throw fail(400, 'Unknown team role');
   if (req.user.role !== 'admin' && role !== 'sales') throw fail(403, 'Admins only');
   const rows = await many(
     `SELECT ${USER_COLS.split(', ').map(c => 'u.' + c).join(', ')}, w.display AS whatsapp,
@@ -128,23 +137,35 @@ r.get('/team', h(async (req, res) => {
 r.post('/team', allow('admin'), h(async (req, res) => {
   const { role, name, email, phone, profile = {} } = req.body || {};
   if (!['admin', 'sales', 'broker', 'maintenance', 'customer'].includes(role)) throw fail(400, 'Pick a role');
-  if (!name || !email) throw fail(400, 'Name and email are required');
-  const temp = req.body.password || crypto.randomBytes(5).toString('base64url');
+  const cleanName = text(name, 'Name', { optional: false, max: 160 });
+  const cleanEmail = validEmail(email, 'Email', { optional: false });
+  const cleanPhone = validPhone(phone, 'Phone');
+  const cleanProfile = validateTeamProfile(role, profile);
+  const temp = req.body.password === undefined ? crypto.randomBytes(5).toString('base64url') : req.body.password;
+  if (typeof temp !== 'string' || temp.length < 8 || temp.length > 1024) throw fail(400, 'Password must be 8 to 1024 characters');
   const u = await one(`INSERT INTO users (org_id, role, name, email, phone, password_hash, profile) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING ${USER_COLS}`,
-    [req.user.org, role, name, email.trim(), phone, await bcrypt.hash(temp, 10), defaultsFor(role, profile)]);
+    [req.user.org, role, cleanName, cleanEmail, cleanPhone || null, await bcrypt.hash(temp, 10), defaultsFor(role, cleanProfile)]);
   res.json({ ...u, temp_password: temp });
 }));
 
 r.patch('/team/:id', allow('admin'), h(async (req, res) => {
   const { name, email, phone, active, profile } = req.body || {};
+  uuid(req.params.id, 'Team member ID');
+  if (Object.keys(req.body || {}).some(key => !['name', 'email', 'phone', 'active', 'profile'].includes(key))) throw fail(400, 'Unsupported team member field');
   const cur = await one(`SELECT * FROM users WHERE id = $1 AND org_id = $2`, [req.params.id, req.user.org]);
   if (!cur) throw fail(404, 'Not found');
+  const cleanName = name === undefined ? null : text(name, 'Name', { optional: false, max: 160 });
+  const cleanEmail = email === undefined ? null : validEmail(email, 'Email', { optional: false });
+  const cleanPhone = phone === undefined ? null : (validPhone(phone, 'Phone') || null);
+  if (active !== undefined && typeof active !== 'boolean') throw fail(400, 'Active must be true or false');
+  const safeProfile = profile === undefined ? cur.profile : merge(cur.profile, validateTeamProfile(cur.role, profile));
   const u = await one(`UPDATE users SET name = COALESCE($2,name), email = COALESCE($3,email), phone = COALESCE($4,phone), active = COALESCE($5,active), profile = $6
-                       WHERE id = $1 RETURNING ${USER_COLS}`, [cur.id, name, email, phone, active, merge(cur.profile, profile || {})]);
+                       WHERE id = $1 RETURNING ${USER_COLS}`, [cur.id, cleanName, cleanEmail, cleanPhone, active, safeProfile]);
   res.json(u);
 }));
 
 r.post('/team/:id/reset-password', allow('admin'), h(async (req, res) => {
+  uuid(req.params.id, 'Team member ID');
   const temp = crypto.randomBytes(5).toString('base64url');
   const u = await one(`UPDATE users SET password_hash = $3 WHERE id = $1 AND org_id = $2 RETURNING id`, [req.params.id, req.user.org, await bcrypt.hash(temp, 10)]);
   if (!u) throw fail(404, 'Not found');
@@ -157,14 +178,71 @@ function defaultsFor(role, p) {
   return p;
 }
 
+function validateAiTwin(value) {
+  record(value, 'AI twin settings');
+  const allowed = ['mode', 'reply_after_min'];
+  if (Object.keys(value).some(k => !allowed.includes(k))) throw fail(400, 'Unsupported AI twin setting');
+  const out = {};
+  if (value.mode !== undefined) out.mode = oneOf(value.mode, 'AI twin mode', ['off', 'away', 'always'], { optional: false });
+  if (value.reply_after_min !== undefined) out.reply_after_min = number(value.reply_after_min, 'AI reply delay', { min: 0, max: 1440, integer: true, optional: false });
+  return out;
+}
+
+function validateTeamProfile(role, profile) {
+  record(profile, 'Team profile');
+  const keys = {
+    sales: ['salary', 'target_units', 'incentive', 'availability', 'ai_twin'],
+    broker: ['firm', 'rera_agent_no', 'commission'],
+    maintenance: ['skills'], admin: [], customer: []
+  }[role];
+  if (Object.keys(profile).some(k => !keys.includes(k))) throw fail(400, 'Unsupported field in team profile');
+  const out = {};
+  if (role === 'sales') {
+    if (profile.salary !== undefined) out.salary = number(profile.salary, 'Monthly salary', { min: 0, max: 100_000_000, optional: false });
+    if (profile.target_units !== undefined) out.target_units = number(profile.target_units, 'Monthly target', { min: 0, max: 1000, integer: true, optional: false });
+    if (profile.incentive !== undefined) out.incentive = validateRate(profile.incentive, 'Incentive');
+    if (profile.availability !== undefined) out.availability = oneOf(profile.availability, 'Availability', ['available', 'busy', 'away'], { optional: false });
+    if (profile.ai_twin !== undefined) out.ai_twin = validateAiTwin(profile.ai_twin);
+  }
+  if (role === 'broker') {
+    if (profile.firm !== undefined) out.firm = text(profile.firm, 'Firm name', { max: 160 });
+    if (profile.rera_agent_no !== undefined) out.rera_agent_no = text(profile.rera_agent_no, 'RERA agent number', { max: 100 });
+    if (profile.commission !== undefined) out.commission = validateRate(profile.commission, 'Commission');
+  }
+  if (role === 'maintenance' && profile.skills !== undefined) {
+    if (!Array.isArray(profile.skills) || profile.skills.length > 30) throw fail(400, 'Skills must be a list of at most 30 items');
+    out.skills = profile.skills.map((skill, i) => text(skill, `Skill ${i + 1}`, { optional: false, max: 80 }));
+  }
+  return out;
+}
+
+function validateRate(value, label) {
+  record(value, label);
+  if (Object.keys(value).some(k => !['type', 'value'].includes(k))) throw fail(400, `Unsupported ${label.toLowerCase()} field`);
+  return {
+    type: oneOf(value.type, `${label} type`, ['percent', 'flat'], { optional: false }),
+    value: number(value.value, `${label} value`, { min: 0, max: value.type === 'flat' ? 1_000_000_000 : 100, optional: false })
+  };
+}
+
 // ---------- Org settings (admin) ----------
 r.put('/org', allow('admin'), h(async (req, res) => {
   const { name, phone, email, address, rera_promoter, logo_url, settings } = req.body || {};
+  const allowed = ['name', 'phone', 'email', 'address', 'rera_promoter', 'logo_url', 'settings'];
+  if (Object.keys(req.body || {}).some(k => !allowed.includes(k))) throw fail(400, 'Unsupported organization field');
+  const cleanName = name === undefined ? null : text(name, 'Company name', { optional: false, max: 160 });
+  const cleanPhone = phone === undefined ? null : (validPhone(phone, 'Office phone') || null);
+  const cleanEmail = email === undefined ? null : validEmail(email, 'Office email', { optional: false });
+  const cleanAddress = address === undefined ? null : text(address, 'Address', { max: 1000 });
+  const cleanRera = rera_promoter === undefined ? null : text(rera_promoter, 'Promoter RERA number', { max: 100 });
+  const cleanLogo = logo_url === undefined ? null : text(logo_url, 'Logo URL', { max: 2048 });
+  if (cleanLogo) { let url; try { url = new URL(cleanLogo); } catch { throw fail(400, 'Logo URL must be a valid HTTP or HTTPS URL'); } if (!['http:', 'https:'].includes(url.protocol)) throw fail(400, 'Logo URL must be a valid HTTP or HTTPS URL'); }
+  const cleanSettings = settings === undefined ? undefined : validateSettings(settings);
   const cur = await one(`SELECT settings FROM orgs WHERE id = $1`, [req.user.org]);
   const o = await one(`UPDATE orgs SET name = COALESCE($2,name), phone = COALESCE($3,phone), email = COALESCE($4,email), address = COALESCE($5,address),
                          rera_promoter = COALESCE($6,rera_promoter), logo_url = COALESCE($7,logo_url), settings = $8 WHERE id = $1
                        RETURNING id, name, logo_url, phone, email, address, rera_promoter, settings`,
-    [req.user.org, name, phone, email, address, rera_promoter, logo_url, merge(cur.settings, settings || {})]);
+    [req.user.org, cleanName, cleanPhone, cleanEmail, cleanAddress, cleanRera, cleanLogo, merge(cur.settings, cleanSettings || {})]);
   o.settings = settingsOf(o);
   res.json(o);
 }));
@@ -182,13 +260,21 @@ r.get('/integrations', allow('admin'), h(async (req, res) => {
 /** Register a WhatsApp number (from Meta → WhatsApp Manager → Phone numbers). user_id empty = builder's main number. */
 r.post('/integrations/whatsapp', allow('admin'), h(async (req, res) => {
   const { phone_number_id, access_token, display, user_id, waba_id } = req.body || {};
-  if (!phone_number_id || !access_token) throw fail(400, 'Phone number ID and access token are required');
+  const phoneNumberId = text(phone_number_id, 'WhatsApp phone number ID', { optional: false, max: 160 });
+  const accessToken = text(access_token, 'WhatsApp access token', { optional: false, max: 4096 });
+  const cleanDisplay = display === undefined || display === null || display === '' ? null : text(display, 'WhatsApp display name', { max: 160 });
+  const cleanWaba = waba_id === undefined || waba_id === null || waba_id === '' ? null : text(waba_id, 'WhatsApp Business account ID', { max: 160 });
+  if (user_id) {
+    uuid(user_id, 'Team member ID');
+    await assertOrgUser(user_id, req.user.org, ['sales']);
+  }
   const row = await one(`INSERT INTO wa_numbers (org_id, user_id, phone_number_id, waba_id, display, access_token) VALUES ($1,$2,$3,$4,$5,$6)
                          ON CONFLICT (phone_number_id) DO UPDATE SET user_id = EXCLUDED.user_id, display = EXCLUDED.display, access_token = EXCLUDED.access_token
-                         RETURNING id, display, phone_number_id, user_id`, [req.user.org, user_id || null, phone_number_id, waba_id || null, display, access_token]);
+                         RETURNING id, display, phone_number_id, user_id`, [req.user.org, user_id || null, phoneNumberId, cleanWaba, cleanDisplay, accessToken]);
   res.json(row);
 }));
 r.delete('/integrations/whatsapp/:id', allow('admin'), h(async (req, res) => {
+  uuid(req.params.id, 'WhatsApp number ID');
   await q(`DELETE FROM wa_numbers WHERE id = $1 AND org_id = $2`, [req.params.id, req.user.org]); res.sendStatus(204);
 }));
 r.post('/integrations/rotate-secret', allow('admin'), h(async (req, res) => {

@@ -10,7 +10,7 @@ import { costSheet } from '../lib/pricing.js';
 import { config } from '../config.js';
 import { settingsOf } from '../settings.js';
 import { notify } from '../services/notify.js';
-import { number, oneOf } from '../lib/validate.js';
+import { number, oneOf, text, uuid, record, unitAreas, projectCharges } from '../lib/validate.js';
 
 const r = Router();
 
@@ -71,8 +71,18 @@ export async function verifyUploadedFiles(req, _res, next) {
 
 export const fileUrl = (req, f) => `/uploads/${req.user.org}/${f.filename}`;
 
+function validateYoutubeUrl(value) {
+  const raw = text(value, 'YouTube URL', { optional: false, max: 2048 });
+  let url;
+  try { url = new URL(raw); } catch { throw fail(400, 'Enter a valid YouTube URL'); }
+  if (!['http:', 'https:'].includes(url.protocol) || !['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be', 'www.youtu.be'].includes(url.hostname.toLowerCase())) throw fail(400, 'Enter a valid YouTube URL');
+  return url.toString();
+}
+
 r.post('/uploads', allow('admin'), upload.array('files', 12), verifyUploadedFiles, h(async (req, res) => {
-  res.json((req.files || []).map(f => ({ url: fileUrl(req, f), name: f.originalname, type: f.mimetype, size: f.size })));
+  const files = req.files || [];
+  if (!files.length) throw fail(400, 'Choose at least one file to upload');
+  res.json(files.map(f => ({ url: fileUrl(req, f), name: f.originalname, type: f.mimetype, size: f.size })));
 }));
 
 // ---------- projects ----------
@@ -98,24 +108,19 @@ r.get('/projects', allow('admin', 'sales', 'broker'), h(async (req, res) => {
      FROM projects p WHERE p.org_id = $1 ORDER BY p.created_at`, [req.user.org]);
   res.json(rows);
 }));
-r.get('/projects/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => res.json(await projectFull(req.params.id, req.user.org))));
+r.get('/projects/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => { uuid(req.params.id, 'Project ID'); res.json(await projectFull(req.params.id, req.user.org)); }));
 
 const PCOLS = ['name', 'tagline', 'description', 'location', 'city', 'map_url', 'rera_no', 'status', 'possession', 'rate_sqft', 'charges', 'payment_plan', 'amenities', 'highlights', 'cover_url', 'brochure_url', 'sales_pool'];
 const PROJECT_STATUSES = ['pre_launch', 'under_construction', 'ready'];
 
-function validateCharges(charges) {
-  if (!charges || typeof charges !== 'object' || Array.isArray(charges)) throw fail(400, 'Charges must be an object');
-  for (const [key, value] of Object.entries(charges)) {
-    number(value, `Charge ${key}`, { min: 0, max: key.endsWith('_pct') ? 100 : 1_000_000_000, optional: false });
-  }
-  return charges;
-}
-
 function validatePaymentPlan(plan) {
   if (!Array.isArray(plan) || plan.length < 1 || plan.length > 30) throw fail(400, 'Payment plan must have 1 to 30 milestones');
   const normalized = plan.map((item, i) => {
-    if (!item || typeof item.milestone !== 'string' || !item.milestone.trim() || item.milestone.length > 100) throw fail(400, `Milestone ${i + 1} needs a name of 1 to 100 characters`);
-    return { ...item, pct: number(item.pct, `Milestone ${i + 1} percentage`, { min: 0.01, max: 100, optional: false }) };
+    record(item, `Milestone ${i + 1}`);
+    if (Object.keys(item).some(key => !['milestone', 'pct', 'due'].includes(key))) throw fail(400, `Milestone ${i + 1} contains an unsupported field`);
+    const milestone = text(item.milestone, `Milestone ${i + 1}`, { optional: false, max: 100 });
+    const due = item.due === undefined || item.due === null || item.due === '' ? undefined : text(item.due, `Milestone ${i + 1} due date`, { optional: false, max: 80 });
+    return { milestone, pct: number(item.pct, `Milestone ${i + 1} percentage`, { min: 0.01, max: 100, optional: false }), ...(due ? { due } : {}) };
   });
   const total = normalized.reduce((sum, item) => sum + item.pct, 0);
   if (Math.abs(total - 100) > 0.01) throw fail(400, 'Payment plan percentages must total 100');
@@ -124,21 +129,28 @@ function validatePaymentPlan(plan) {
 
 r.post('/projects', allow('admin'), h(async (req, res) => {
   const b = req.body || {};
-  if (typeof b.name !== 'string' || !b.name.trim() || b.name.length > 120) throw fail(400, 'Project name must be 1 to 120 characters');
+  if (Object.keys(b).some(key => !['name', 'city', 'rate_sqft', 'charges', 'payment_plan'].includes(key))) throw fail(400, 'Unsupported project field');
+  const name = text(b.name, 'Project name', { optional: false, max: 120 });
+  const city = b.city === undefined || b.city === null || b.city === '' ? null : text(b.city, 'City', { optional: false, max: 120 });
   const rate = number(b.rate_sqft ?? 0, 'Rate per square foot', { min: 0, max: 1_000_000, optional: false });
-  const charges = validateCharges(b.charges || { parking: 300000, club: 150000, maintenance_deposit: 75000, registry_pct: 7.5, stamp_pct: 6, registration: 30000 });
-  const paymentPlan = validatePaymentPlan(b.payment_plan || [{ milestone: 'On booking', pct: 10 }, { milestone: 'Within 30 days (agreement)', pct: 15 }, { milestone: 'On slab completion', pct: 45 }, { milestone: 'On possession', pct: 30 }]);
+  const charges = projectCharges(b.charges === undefined ? { parking: 300000, club: 150000, maintenance_deposit: 75000, registry_pct: 7.5, stamp_pct: 6, registration: 30000 } : b.charges);
+  const paymentPlan = validatePaymentPlan(b.payment_plan === undefined ? [{ milestone: 'On booking', pct: 10 }, { milestone: 'Within 30 days (agreement)', pct: 15 }, { milestone: 'On slab completion', pct: 45 }, { milestone: 'On possession', pct: 30 }] : b.payment_plan);
   const p = await one(`INSERT INTO projects (org_id, name, city, rate_sqft, charges, payment_plan) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-    [req.user.org, b.name.trim(), b.city || null, rate, charges, JSON.stringify(paymentPlan)]);
+    [req.user.org, name, city, rate, charges, JSON.stringify(paymentPlan)]);
   res.json(await projectFull(p.id, req.user.org));
 }));
 
 r.put('/projects/:id', allow('admin'), h(async (req, res) => {
+  uuid(req.params.id, 'Project ID');
   const b = req.body || {};
-  if (b.name !== undefined && (typeof b.name !== 'string' || !b.name.trim() || b.name.length > 120)) throw fail(400, 'Project name must be 1 to 120 characters');
+  if (Object.keys(b).some(key => !PCOLS.includes(key))) throw fail(400, 'Unsupported project field');
+  if (b.name !== undefined) b.name = text(b.name, 'Project name', { optional: false, max: 120 });
   if (b.status !== undefined) oneOf(b.status, 'Project status', PROJECT_STATUSES, { optional: false });
   if (b.rate_sqft !== undefined) number(b.rate_sqft, 'Rate per square foot', { min: 0, max: 1_000_000, optional: false });
-  if (b.charges !== undefined) validateCharges(b.charges);
+  for (const [key, max] of Object.entries({ tagline: 160, description: 5000, location: 240, city: 120, map_url: 2048, rera_no: 120, possession: 120, cover_url: 2048, brochure_url: 2048 })) {
+    if (b[key] !== undefined) b[key] = b[key] === null ? null : text(b[key], key.replaceAll('_', ' '), { max });
+  }
+  if (b.charges !== undefined) b.charges = projectCharges(b.charges);
   if (b.payment_plan !== undefined) b.payment_plan = validatePaymentPlan(b.payment_plan);
   for (const key of ['amenities', 'highlights']) if (b[key] !== undefined) {
     if (!Array.isArray(b[key]) || b[key].length > 50 || b[key].some(x => typeof x !== 'string' || !x.trim() || x.length > 160)) throw fail(400, `${key} must be a list of up to 50 text items (160 characters each)`);
@@ -156,6 +168,7 @@ r.put('/projects/:id', allow('admin'), h(async (req, res) => {
 }));
 
 r.delete('/projects/:id', allow('admin'), h(async (req, res) => {
+  uuid(req.params.id, 'Project ID');
   const sold = await one(`SELECT 1 FROM bookings b JOIN units u ON u.id = b.unit_id WHERE u.project_id = $1 LIMIT 1`, [req.params.id]);
   if (sold) throw fail(409, 'This project has bookings and cannot be deleted');
   await q(`DELETE FROM projects WHERE id = $1 AND org_id = $2`, [req.params.id, req.user.org]); res.sendStatus(204);
@@ -163,24 +176,37 @@ r.delete('/projects/:id', allow('admin'), h(async (req, res) => {
 
 // unit types
 r.post('/projects/:id/unit-types', allow('admin'), h(async (req, res) => {
+  uuid(req.params.id, 'Project ID');
   const t = req.body || {};
-  if (typeof t.name !== 'string' || !t.name.trim() || t.name.length > 100) throw fail(400, 'Unit type name must be 1 to 100 characters');
-  number(t.bhk, 'BHK count', { min: 1, max: 20, optional: false });
-  for (const key of ['carpet_sqft', 'builtup_sqft', 'super_sqft']) number(t[key], key.replace('_', ' '), { min: 1, max: 1_000_000, optional: false });
-  number(t.bathrooms ?? 2, 'Bathrooms', { min: 0, max: 20, integer: true });
-  number(t.balconies ?? 1, 'Balconies', { min: 0, max: 20, integer: true });
+  const allowed = ['name', 'bhk', 'carpet_sqft', 'builtup_sqft', 'super_sqft', 'bathrooms', 'balconies', 'floorplan_url'];
+  if (Object.keys(t).some(key => !allowed.includes(key))) throw fail(400, 'Unsupported unit type field');
+  const typeName = text(t.name, 'Unit type name', { optional: false, max: 100 });
+  const bhk = number(t.bhk, 'BHK count', { min: 1, max: 20, integer: true, optional: false });
+  const areas = unitAreas(t);
+  const bathrooms = number(t.bathrooms ?? 2, 'Bathrooms', { min: 0, max: 20, integer: true, optional: false });
+  const balconies = number(t.balconies ?? 1, 'Balconies', { min: 0, max: 20, integer: true, optional: false });
+  const floorplan = t.floorplan_url ? text(t.floorplan_url, 'Floor plan URL', { optional: false, max: 2048 }) : null;
   const row = await one(`INSERT INTO unit_types (project_id, name, bhk, carpet_sqft, builtup_sqft, super_sqft, bathrooms, balconies, floorplan_url)
                          SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9 FROM projects WHERE id = $1 AND org_id = $10 RETURNING *`,
-    [req.params.id, t.name.trim(), t.bhk, t.carpet_sqft, t.builtup_sqft, t.super_sqft, t.bathrooms ?? 2, t.balconies ?? 1, t.floorplan_url || null, req.user.org]);
+    [req.params.id, typeName, bhk, areas.carpet_sqft, areas.builtup_sqft, areas.super_sqft, bathrooms, balconies, floorplan, req.user.org]);
   res.json(row);
 }));
 r.put('/unit-types/:id', allow('admin'), h(async (req, res) => {
+  uuid(req.params.id, 'Unit type ID');
   const t = req.body || {};
-  if (t.name !== undefined && (typeof t.name !== 'string' || !t.name.trim() || t.name.length > 100)) throw fail(400, 'Unit type name must be 1 to 100 characters');
-  if (t.bhk !== undefined) number(t.bhk, 'BHK count', { min: 1, max: 20, optional: false });
-  for (const key of ['carpet_sqft', 'builtup_sqft', 'super_sqft']) if (t[key] !== undefined) number(t[key], key.replace('_', ' '), { min: 1, max: 1_000_000, optional: false });
-  if (t.bathrooms !== undefined) number(t.bathrooms, 'Bathrooms', { min: 0, max: 20, integer: true, optional: false });
-  if (t.balconies !== undefined) number(t.balconies, 'Balconies', { min: 0, max: 20, integer: true, optional: false });
+  const allowed = ['name', 'bhk', 'carpet_sqft', 'builtup_sqft', 'super_sqft', 'bathrooms', 'balconies', 'floorplan_url'];
+  if (Object.keys(t).some(key => !allowed.includes(key))) throw fail(400, 'Unsupported unit type field');
+  const cur = await one(`SELECT t.carpet_sqft, t.builtup_sqft, t.super_sqft FROM unit_types t JOIN projects p ON p.id = t.project_id WHERE t.id = $1 AND p.org_id = $2`, [req.params.id, req.user.org]);
+  if (!cur) throw fail(404, 'Unit type not found');
+  if (t.name !== undefined) t.name = text(t.name, 'Unit type name', { optional: false, max: 100 });
+  if (t.bhk !== undefined) t.bhk = number(t.bhk, 'BHK count', { min: 1, max: 20, integer: true, optional: false });
+  if (['carpet_sqft', 'builtup_sqft', 'super_sqft'].some(key => t[key] !== undefined)) {
+    const areas = unitAreas({ carpet_sqft: t.carpet_sqft ?? cur.carpet_sqft, builtup_sqft: t.builtup_sqft ?? cur.builtup_sqft, super_sqft: t.super_sqft ?? cur.super_sqft });
+    for (const key of ['carpet_sqft', 'builtup_sqft', 'super_sqft']) if (t[key] !== undefined) t[key] = areas[key];
+  }
+  if (t.bathrooms !== undefined) t.bathrooms = number(t.bathrooms, 'Bathrooms', { min: 0, max: 20, integer: true, optional: false });
+  if (t.balconies !== undefined) t.balconies = number(t.balconies, 'Balconies', { min: 0, max: 20, integer: true, optional: false });
+  if (t.floorplan_url !== undefined && t.floorplan_url !== null) t.floorplan_url = text(t.floorplan_url, 'Floor plan URL', { max: 2048 });
   res.json(await one(`UPDATE unit_types t SET name = COALESCE($2,name), bhk = COALESCE($3,bhk), carpet_sqft = COALESCE($4,carpet_sqft), builtup_sqft = COALESCE($5,builtup_sqft),
                         super_sqft = COALESCE($6,super_sqft), bathrooms = COALESCE($7,bathrooms), balconies = COALESCE($8,balconies), floorplan_url = COALESCE($9,floorplan_url)
                       FROM projects p WHERE t.id = $1 AND p.id = t.project_id AND p.org_id = $10 RETURNING t.*`,
@@ -189,6 +215,7 @@ r.put('/unit-types/:id', allow('admin'), h(async (req, res) => {
 
 /** Create a tower and all its units at once: floors × units per floor, each column mapped to a unit type. */
 r.post('/projects/:id/towers', allow('admin'), h(async (req, res) => {
+  uuid(req.params.id, 'Project ID');
   const { name, floors, per_floor, types = [], facing = [], plc = [], start_floor = 1, format = '{floor}{n}-{tower}' } = req.body || {};
   if (typeof name !== 'string' || !name.trim() || name.length > 80) throw fail(400, 'Tower name must be 1 to 80 characters');
   const floorCount = number(floors, 'Floors', { min: 1, max: 100, integer: true, optional: false });
@@ -197,10 +224,10 @@ r.post('/projects/:id/towers', allow('admin'), h(async (req, res) => {
   if (floorCount * unitsPerFloor > 2000) throw fail(400, 'A tower can generate at most 2,000 units per request');
   if (!Array.isArray(types) || !Array.isArray(facing) || !Array.isArray(plc)) throw fail(400, 'Tower type, facing, and PLC values must be arrays');
   if (types.length > unitsPerFloor || facing.length > unitsPerFloor || plc.length > unitsPerFloor) throw fail(400, 'Tower configuration arrays cannot exceed units per floor');
-  if (typeof format !== 'string' || !format.trim() || format.length > 80) throw fail(400, 'Unit number format must be 1 to 80 characters');
+  if (typeof format !== 'string' || !format.trim() || format.length > 80 || !format.includes('{floor}') || !format.includes('{n}') || /\{(?!floor\}|n\}|tower\})[^{}]*\}/.test(format)) throw fail(400, 'Unit number format must include {floor} and {n}, and be at most 80 characters');
   if (types.some(id => id && (typeof id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)))) throw fail(400, 'Unit type IDs must be valid');
   if (facing.some(value => value && (typeof value !== 'string' || value.length > 80))) throw fail(400, 'Facing values must be text up to 80 characters');
-  plc.forEach((value, i) => number(value, `PLC ${i + 1}`, { min: 0, max: 100, optional: false }));
+  const plcValues = plc.map((value, i) => number(value, `PLC ${i + 1}`, { min: 0, max: 100, optional: false }));
   const p = await one(`SELECT id FROM projects WHERE id = $1 AND org_id = $2`, [req.params.id, req.user.org]);
   if (!p) throw fail(404, 'Project not found');
   const typeIds = [...new Set(types.filter(Boolean))];
@@ -213,7 +240,7 @@ r.post('/projects/:id/towers', allow('admin'), h(async (req, res) => {
     for (let f = firstFloor; f < firstFloor + floorCount; f++) for (let n = 1; n <= unitsPerFloor; n++) {
       const no = format.replace('{floor}', f).replace('{n}', String(n).padStart(2, '0')).replace('{tower}', name);
       await t.q(`INSERT INTO units (project_id, tower_id, unit_type_id, unit_no, floor, facing, plc_pct) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-        [p.id, tw.id, types[n - 1] || types[0] || null, no, f, facing[n - 1] || null, plc[n - 1] || 0]);
+        [p.id, tw.id, types[n - 1] || types[0] || null, no, f, facing[n - 1] || null, plcValues[n - 1] || 0]);
     }
     return tw;
   });
@@ -223,6 +250,8 @@ r.post('/projects/:id/towers', allow('admin'), h(async (req, res) => {
 // ---------- inventory ----------
 r.get('/units', allow('admin', 'sales', 'broker'), h(async (req, res) => {
   const { project_id, status } = req.query;
+  if (project_id) uuid(project_id, 'Project ID');
+  if (status) oneOf(status, 'Inventory status', ['available', 'hold', 'booked', 'sold', 'blocked'], { optional: false });
   const vals = [req.user.org]; let where = 'p.org_id = $1';
   if (project_id) { vals.push(project_id); where += ` AND u.project_id = $${vals.length}`; }
   if (status) { vals.push(status); where += ` AND u.status = $${vals.length}`; }
@@ -246,9 +275,12 @@ r.get('/units', allow('admin', 'sales', 'broker'), h(async (req, res) => {
 
 /** status changes: hold / release / block / available. Booking & sale go through /bookings. */
 r.patch('/units/:id', h(async (req, res) => {
+  uuid(req.params.id, 'Unit ID');
   const u = await one(`SELECT u.*, p.org_id, p.name AS project FROM units u JOIN projects p ON p.id = u.project_id WHERE u.id = $1 AND p.org_id = $2`, [req.params.id, req.user.org]);
   if (!u) throw fail(404, 'Unit not found');
   const { action, plc_pct, price_override, facing, notes, unit_type_id } = req.body || {};
+  if (Object.keys(req.body || {}).some(key => !['action', 'plc_pct', 'price_override', 'facing', 'notes', 'unit_type_id'].includes(key))) throw fail(400, 'Unsupported inventory field');
+  if (unit_type_id) uuid(unit_type_id, 'Unit type ID');
   if (action !== undefined) oneOf(action, 'Inventory action', ['hold', 'release', 'block', 'unblock'], { optional: false });
   if (plc_pct !== undefined) number(plc_pct, 'PLC percentage', { min: 0, max: 100, optional: false });
   if (price_override !== undefined && price_override !== '') number(price_override, 'Price override', { min: 0, max: 1_000_000_000, optional: false });
@@ -286,43 +318,89 @@ r.patch('/units/:id', h(async (req, res) => {
 
 // ---------- media ----------
 r.post('/projects/:id/media', allow('admin'), upload.array('files', 20), verifyUploadedFiles, h(async (req, res) => {
-  const p = await one(`SELECT id FROM projects WHERE id = $1 AND org_id = $2`, [req.params.id, req.user.org]);
-  if (!p) throw fail(404, 'Project not found');
-  const unitTypeId = req.body.unit_type_id || null;
-  if (unitTypeId && !(await one(`SELECT id FROM unit_types WHERE id = $1 AND project_id = $2`, [unitTypeId, p.id]))) throw fail(400, 'Selected flat type does not belong to this project');
-  if (req.body.kind === 'floorplan' && !unitTypeId) throw fail(400, 'Select a flat type for its floor plan');
-  const out = [];
-  for (const f of req.files || []) {
-    const kind = f.mimetype.startsWith('video') ? 'video' : f.mimetype === 'application/pdf' ? 'brochure' : (req.body.kind === 'floorplan' ? 'floorplan' : 'image');
-    out.push(await one(`INSERT INTO media (org_id, project_id, unit_type_id, kind, url, title) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [req.user.org, p.id, unitTypeId, kind, fileUrl(req, f), req.body.title || f.originalname.replace(/\.[^.]+$/, '')]));
-    if (kind === 'floorplan' && unitTypeId) await q(`UPDATE unit_types SET floorplan_url = $2 WHERE id = $1`, [unitTypeId, fileUrl(req, f)]);
+  const files = req.files || [];
+  let out;
+  try {
+    uuid(req.params.id, 'Project ID');
+    const p = await one(`SELECT id FROM projects WHERE id = $1 AND org_id = $2`, [req.params.id, req.user.org]);
+    if (!p) throw fail(404, 'Project not found');
+    const kindRequested = req.body.kind || 'image';
+    oneOf(kindRequested, 'Media type', ['image', 'video', 'floorplan', 'brochure'], { optional: false });
+    const unitTypeId = req.body.unit_type_id || null;
+    if (unitTypeId) uuid(unitTypeId, 'Flat type ID');
+    if (unitTypeId && !(await one(`SELECT id FROM unit_types WHERE id = $1 AND project_id = $2`, [unitTypeId, p.id]))) throw fail(400, 'Selected flat type does not belong to this project');
+    if (kindRequested === 'floorplan' && !unitTypeId) throw fail(400, 'Select a flat type for its floor plan');
+    const youtube = req.body.youtube ? validateYoutubeUrl(req.body.youtube) : null;
+    if (!files.length && !youtube) throw fail(400, 'Choose media files or provide a YouTube URL');
+    const title = req.body.title ? text(req.body.title, 'Media title', { optional: false, max: 160 }) : null;
+    const fileTitles = files.map(file => title || text(file.originalname.replace(/\.[^.]+$/, ''), 'Media title', { max: 160 }));
+    for (const f of files) {
+      const isVideo = f.mimetype.startsWith('video/');
+      const isImage = f.mimetype.startsWith('image/');
+      const isPdf = f.mimetype === 'application/pdf';
+      if ((kindRequested === 'video' && !isVideo) || (['image', 'floorplan'].includes(kindRequested) && !isImage) || (kindRequested === 'brochure' && !isPdf)) throw fail(400, `Selected media type does not match ${f.originalname}`);
+    }
+    out = await tx(async t => {
+      const mediaRows = [];
+      for (const [i, f] of files.entries()) {
+        const kind = kindRequested;
+        const url = fileUrl(req, f);
+        mediaRows.push(await t.one(`INSERT INTO media (org_id, project_id, unit_type_id, kind, url, title) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+          [req.user.org, p.id, unitTypeId, kind, url, fileTitles[i]]));
+        if (kind === 'floorplan' && unitTypeId) await t.q(`UPDATE unit_types SET floorplan_url = $2 WHERE id = $1`, [unitTypeId, url]);
+      }
+      if (youtube) mediaRows.push(await t.one(`INSERT INTO media (org_id, project_id, unit_type_id, kind, url, title) VALUES ($1,$2,$3,'youtube',$4,$5) RETURNING *`, [req.user.org, p.id, unitTypeId, youtube, title || 'Video']));
+      return mediaRows;
+    });
+  } catch (error) {
+    await Promise.all(files.map(file => fs.promises.unlink(file.path).catch(() => {})));
+    throw error;
   }
-  if (req.body.youtube) out.push(await one(`INSERT INTO media (org_id, project_id, unit_type_id, kind, url, title) VALUES ($1,$2,$3,'youtube',$4,$5) RETURNING *`, [req.user.org, p.id, unitTypeId, req.body.youtube, req.body.title || 'Video']));
   res.json(out);
 }));
 r.patch('/media/:id', allow('admin'), h(async (req, res) => {
-  res.json(await one(`UPDATE media SET title = COALESCE($3,title), sort = COALESCE($4,sort) WHERE id = $1 AND org_id = $2 RETURNING *`, [req.params.id, req.user.org, req.body.title, req.body.sort]));
+  uuid(req.params.id, 'Media ID');
+  const { title, sort } = req.body || {};
+  if (Object.keys(req.body || {}).some(key => !['title', 'sort'].includes(key))) throw fail(400, 'Unsupported media field');
+  const cleanTitle = title === undefined ? null : text(title, 'Media title', { optional: false, max: 160 });
+  const cleanSort = sort === undefined ? null : number(sort, 'Media order', { min: 0, max: 100_000, integer: true, optional: false });
+  const row = await one(`UPDATE media SET title = COALESCE($3,title), sort = COALESCE($4,sort) WHERE id = $1 AND org_id = $2 RETURNING *`, [req.params.id, req.user.org, cleanTitle, cleanSort]);
+  if (!row) throw fail(404, 'Media not found');
+  res.json(row);
 }));
 r.delete('/media/:id', allow('admin'), h(async (req, res) => {
+  uuid(req.params.id, 'Media ID');
   await q(`DELETE FROM media WHERE id = $1 AND org_id = $2`, [req.params.id, req.user.org]); res.sendStatus(204);
 }));
 
 // ---------- construction updates (shown to customers) ----------
 r.post('/projects/:id/updates', allow('admin', 'sales'), h(async (req, res) => {
   const { title, body, media_url, tower_id, stage_name, progress_pct, media_urls } = req.body || {};
-  if (!title) throw fail(400, 'Title is required');
-  const urls = Array.isArray(media_urls) && media_urls.length > 0 ? media_urls : (media_url ? [media_url] : []);
+  uuid(req.params.id, 'Project ID');
+  const cleanTitle = text(title, 'Update title', { optional: false, max: 160 });
+  const cleanBody = body === undefined || body === null || body === '' ? null : text(body, 'Update details', { max: 5000 });
+  const cleanStage = stage_name === undefined || stage_name === null || stage_name === '' ? null : text(stage_name, 'Construction stage', { max: 120 });
+  if (tower_id) uuid(tower_id, 'Tower ID');
+  const progress = progress_pct === undefined || progress_pct === null || progress_pct === '' ? 0 : number(progress_pct, 'Progress percentage', { min: 0, max: 100, optional: false });
+  let urls;
+  if (media_urls !== undefined) {
+    if (!Array.isArray(media_urls) || media_urls.length > 20) throw fail(400, 'Media URLs must be a list of at most 20 items');
+    urls = media_urls.map((url, i) => text(url, `Media URL ${i + 1}`, { optional: false, max: 2048 }));
+  } else urls = media_url ? [text(media_url, 'Media URL', { optional: false, max: 2048 })] : [];
+  if (tower_id && !(await one(`SELECT id FROM towers WHERE id = $1 AND project_id = $2`, [tower_id, req.params.id]))) throw fail(400, 'Tower must belong to this project');
   const u = await one(`INSERT INTO project_updates (project_id, title, body, media_url, tower_id, stage_name, progress_pct, media_urls)
     SELECT $1, $2, $3, $4, $5, $6, $7, $8
     FROM projects WHERE id = $1 AND org_id = $9 RETURNING *`,
-    [req.params.id, title, body || null, urls[0] || null, tower_id || null, stage_name || null, progress_pct ? Number(progress_pct) : 0, JSON.stringify(urls), req.user.org]);
+    [req.params.id, cleanTitle, cleanBody, urls[0] || null, tower_id || null, cleanStage, progress, JSON.stringify(urls), req.user.org]);
+  if (!u) throw fail(404, 'Project not found');
   const buyers = await many(`SELECT DISTINCT b.customer_id FROM bookings b JOIN units un ON un.id = b.unit_id WHERE un.project_id = $1 AND b.customer_id IS NOT NULL`, [req.params.id]);
   for (const b of buyers) await notify(req.user.org, b.customer_id, 'update', `Construction update: ${title}`, '/portal');
   res.json(u);
 }));
 
 r.delete('/projects/:projectId/updates/:updateId', allow('admin'), h(async (req, res) => {
+  uuid(req.params.projectId, 'Project ID');
+  uuid(req.params.updateId, 'Update ID');
   await q(`DELETE FROM project_updates WHERE id = $1 AND project_id IN (SELECT id FROM projects WHERE id = $2 AND org_id = $3)`,
     [req.params.updateId, req.params.projectId, req.user.org]);
   res.json({ ok: true });
