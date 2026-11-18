@@ -19,6 +19,8 @@ import Portal from './pages/Portal.jsx';
 import SharePage from './pages/SharePage.jsx';
 import EmiCalculatorModal from './components/EmiCalculatorModal.jsx';
 import ProfileModal from './components/ProfileModal.jsx';
+import RenewSubscriptionModal from './pages/RenewSubscription.jsx';
+import SuperAdminPortal from './pages/superadmin/SuperAdminPortal.jsx';
 
 const NAV = {
   admin: [
@@ -117,6 +119,14 @@ export default function App() {
 
   const go = useCallback(path => { location.hash = '#/' + path.replace(/^\//, ''); }, []);
 
+  const isSuperAdmin = window.location.hostname.startsWith('admin.') || 
+    window.location.pathname.startsWith('/superadmin') || 
+    route[0] === 'superadmin';
+
+  if (isSuperAdmin) {
+    return <SuperAdminPortal />;
+  }
+
   if (route[0] === 's') return <><SharePage token={route[1]} say={say} />{toast && <div className="toast" role="status">{toast}</div>}</>;
   if (!authed) return (
     <>
@@ -131,12 +141,15 @@ export default function App() {
 function Shell({ route, go, say, toast, onLogout, onSwitchRole }) {
   const [me, reloadMe] = useLoad(() => api.get('/api/me'), []);
   const [notifs, reloadN] = useLoad(() => api.get('/api/notifications'), []);
+  const [billing, reloadBilling] = useLoad(() => api.get('/api/billing/status').catch(() => null), []);
   const [bell, setBell] = useState(false);
   const [showEmi, setShowEmi] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const [showRenew, setShowRenew] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   useEffect(() => { const t = setInterval(reloadN, 30000); return () => clearInterval(t); }, [reloadN]);
+  useEffect(() => { if (route[0] === 'renew' || (billing?.is_expired && me?.user?.role === 'admin')) setShowRenew(true); }, [route, billing, me]);
   if (!me) return <div className="boot"><Logo size={44} /></div>;
   const role = me.user.role;
   const nav = NAV[role];
@@ -167,6 +180,31 @@ function Shell({ route, go, say, toast, onLogout, onSwitchRole }) {
         <header className="topbar">
           {adminWorkspace && <button className="iconbtn dashboard-menu-button" aria-label="Open navigation" aria-expanded={sidebarOpen} onClick={() => setSidebarOpen(value => !value)}><Icon name="menu" /></button>}
           <div style={{ minWidth: 0 }}><h1>{TITLES[page]}</h1></div><div className="spacer" />
+          {billing && billing.days_left !== undefined && (
+            <button
+              type="button"
+              className="trial-badge-btn"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                background: billing.is_expired ? 'rgba(239,68,68,0.18)' : billing.days_left <= 3 ? 'rgba(234,179,8,0.18)' : 'rgba(16,185,129,0.18)',
+                color: billing.is_expired ? '#f87171' : billing.days_left <= 3 ? '#facc15' : '#34d399',
+                border: `1px solid ${billing.is_expired ? '#ef4444' : billing.days_left <= 3 ? '#eab308' : '#059669'}`,
+                borderRadius: 9999,
+                padding: '4px 10px',
+                fontSize: 12,
+                fontWeight: 700,
+                cursor: 'pointer',
+                marginRight: 6
+              }}
+              onClick={() => setShowRenew(true)}
+              title="Click to view subscription & renewal plans"
+            >
+              <Icon name="clock" style={{ width: 13, height: 13 }} />
+              {billing.is_expired ? 'Plan Expired — Renew' : `${billing.days_left}d Trial Left`}
+            </button>
+          )}
           {adminWorkspace ? <DashboardSearch go={go} /> : api.mode === 'demo' && <DemoSwitch role={role} onSwitch={onSwitchRole} />}
           {!adminWorkspace && <button className="iconbtn" onClick={() => setShowEmi(true)} title="Home Loan EMI Calculator" aria-label="Home Loan EMI Calculator"><Icon name="calc" /></button>}
           <div style={{ position: 'relative' }}>
@@ -177,7 +215,7 @@ function Shell({ route, go, say, toast, onLogout, onSwitchRole }) {
           </div>
           {adminWorkspace ? <div className="profile-menu-wrap">
             <button className="dashboard-profile-button" aria-label="Open profile menu" aria-expanded={profileOpen} onClick={() => setProfileOpen(value => !value)}><Avatar name={me.user.name} size="sm" src={api.media(me.user.profile?.avatar_url)} /><Icon name="chevronDown" /></button>
-            {profileOpen && <div className="dashboard-profile-menu"><b>{me.user.name}</b><small>{ROLE_LABEL[role]}</small>{api.mode === 'demo' && <label className="profile-role-switch">View as <select value={role} onChange={event => onSwitchRole(event.target.value)}><option value="admin">Builder admin</option><option value="sales">Sales agent</option><option value="broker">Broker</option><option value="maintenance">Maintenance</option><option value="customer">Home owner</option></select></label>}<button onClick={() => { setProfileOpen(false); setShowProfile(true); }}><Icon name="user" />My profile</button><button onClick={() => { setProfileOpen(false); setShowEmi(true); }}><Icon name="calc" />Home loan calculator</button><button className="profile-logout" onClick={onLogout}><Icon name="logout" />Log out</button></div>}
+            {profileOpen && <div className="dashboard-profile-menu"><b>{me.user.name}</b><small>{ROLE_LABEL[role]}</small>{api.mode === 'demo' && <label className="profile-role-switch">View as <select value={role} onChange={event => onSwitchRole(event.target.value)}><option value="admin">Builder admin</option><option value="sales">Sales agent</option><option value="broker">Broker</option><option value="maintenance">Maintenance</option><option value="customer">Home owner</option></select></label>}<button onClick={() => { setProfileOpen(false); setShowProfile(true); }}><Icon name="user" />My profile</button><button onClick={() => { setProfileOpen(false); setShowRenew(true); }}><Icon name="receipt" />Subscription &amp; Plans</button><button onClick={() => { setProfileOpen(false); setShowEmi(true); }}><Icon name="calc" />Home loan calculator</button><button className="profile-logout" onClick={onLogout}><Icon name="logout" />Log out</button></div>}
           </div> : <button className="iconbtn" aria-label="Log out" onClick={onLogout}><Icon name="logout" /></button>}
         </header>
         <div className="content" key={page + route.join('/')}>
@@ -198,6 +236,7 @@ function Shell({ route, go, say, toast, onLogout, onSwitchRole }) {
       </main>
       {showEmi && <EmiCalculatorModal onClose={() => setShowEmi(false)} say={say} />}
       {showProfile && <ProfileModal me={me} onClose={() => setShowProfile(false)} onSaved={() => { setShowProfile(false); reloadMe(); }} onAvatarSaved={reloadMe} say={say} />}
+      <RenewSubscriptionModal isOpen={showRenew} onClose={() => setShowRenew(false)} billing={billing} onRenewed={reloadBilling} say={say} />
       {toast && <div className="toast" role="status">{toast}</div>}
     </div>
   );

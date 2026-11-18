@@ -13,6 +13,10 @@ import sales from './routes/sales.js';
 import service from './routes/service.js';
 import pub from './routes/public.js';
 import webhooks from './routes/webhooks.js';
+import billing from './routes/billing.js';
+import superadmin from './routes/superadmin.js';
+import { tenantResolver } from './middleware/tenant-resolver.js';
+import { subscriptionGuard } from './middleware/subscription-guard.js';
 import { startJobs } from './services/jobs.js';
 import { ensureDatabaseSchema } from '../db/setup-db.js';
 import { runMigrations } from '../db/migrations.js';
@@ -38,10 +42,15 @@ const uploadHeaders = (res, _filePath) => {
 app.use('/uploads', express.static(config.uploadDir, { maxAge: '7d', fallthrough: true, setHeaders: uploadHeaders }));
 app.use('/uploads/sample', express.static(path.join(dir, '../uploads/sample'), { maxAge: '7d', setHeaders: uploadHeaders }));
 
+// Resolve tenant and route DB queries dynamically to tenant database
+app.use(tenantResolver);
+
 app.use('/auth', auth);
 app.use('/webhooks', webhooks);
 app.use('/', pub);
-app.use('/api', requireAuth, core, projects, sales, service);
+app.use('/api/superadmin', superadmin);
+app.use('/api/billing', requireAuth, billing);
+app.use('/api', requireAuth, subscriptionGuard, core, projects, sales, service);
 app.get('/health/live', (_req, res) => res.json({ ok: true }));
 app.get('/health/ready', async (_req, res) => {
   try {

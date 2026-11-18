@@ -154,3 +154,4 @@ export async function sendPaymentApprovedEmail({ email, name, planType, newExpir
 
   return sendEmail({ to: email, subject, html });
 }
+

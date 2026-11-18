@@ -23,3 +23,4 @@ test('generateTempPassword generates expected format', () => {
   assert.ok(pwd.startsWith('Nivaas@'));
   assert.ok(pwd.length >= 14);
 });
+
