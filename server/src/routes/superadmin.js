@@ -220,6 +220,93 @@ r.patch('/tenants/:id', requireSuperAdmin, h(async (req, res) => {
 }));
 
 /**
+ * GET /api/superadmin/tenants/:id
+ * Detailed profile of a single tenant including its isolated DB status and audit payments
+ */
+r.get('/tenants/:id', requireSuperAdmin, h(async (req, res) => {
+  const { id } = req.params;
+  const tenant = await masterDb.one(`SELECT * FROM tenants WHERE id = $1`, [id]);
+  if (!tenant) throw fail(404, 'Tenant not found');
+
+  const payments = await masterDb.many(
+    `SELECT * FROM subscription_payments WHERE tenant_id = $1 ORDER BY created_at DESC`,
+    [id]
+  );
+
+  res.json({ ok: true, tenant, payments });
+}));
+
+/**
+ * POST /api/superadmin/tenants/:id/reset-password
+ * Hard resets tenant admin credentials directly in the client's isolated physical database
+ */
+r.post('/tenants/:id/reset-password', requireSuperAdmin, h(async (req, res) => {
+  const { id } = req.params;
+  const tenant = await masterDb.one(`SELECT * FROM tenants WHERE id = $1`, [id]);
+  if (!tenant) throw fail(404, 'Tenant not found');
+
+  const crypto = await import('node:crypto');
+  const tempPassword = 'Nivaas@' + crypto.randomBytes(4).toString('hex');
+  const hash = await bcrypt.hash(tempPassword, 10);
+
+  // Update directly inside tenant's isolated physical database
+  const { getTenantPool } = await import('../lib/tenant-db.js');
+  const tenantPool = await getTenantPool(tenant.slug);
+  await tenantPool.query(
+    `UPDATE users SET password_hash = $1, updated_at = NOW() WHERE lower(email) = lower($2)`,
+    [hash, tenant.admin_email]
+  );
+
+  res.json({
+    success: true,
+    data: {
+      businessName: tenant.name,
+      adminUsername: tenant.admin_email,
+      tempPassword,
+      portalUrl: `https://${tenant.slug}.nivaas.space`,
+      generatedAt: new Date().toISOString(),
+    }
+  });
+}));
+
+/**
+ * POST /api/superadmin/tenants/:id/renew
+ * Extends client subscription duration with plan selection and records audit log
+ */
+r.post('/tenants/:id/renew', requireSuperAdmin, h(async (req, res) => {
+  const { id } = req.params;
+  const { plan_type, duration_days, duration_months, amount_paid, notes } = req.body || {};
+  const tenant = await masterDb.one(`SELECT * FROM tenants WHERE id = $1`, [id]);
+  if (!tenant) throw fail(404, 'Tenant not found');
+
+  const days = duration_days ? Number(duration_days) : (Number(duration_months) || 1) * 30;
+
+  const updated = await masterDb.one(
+    `UPDATE tenants 
+     SET subscription_ends_at = GREATEST(subscription_ends_at, NOW()) + ($1 || ' days')::interval,
+         subscription_status = 'active',
+         plan_type = COALESCE($2, plan_type),
+         updated_at = NOW()
+     WHERE id = $3
+     RETURNING *`,
+    [days, plan_type || tenant.plan_type, id]
+  );
+
+  // Record audit payment proof if amount provided
+  if (amount_paid && Number(amount_paid) > 0) {
+    await masterDb.query(
+      `INSERT INTO subscription_payments (tenant_id, plan_type, amount, duration_days, payment_mode, screenshot_url, status, review_notes, reviewed_by, reviewed_at)
+       VALUES ($1, $2, $3, $4, 'manual_admin', 'https://nivaas.space/assets/admin-approved.png', 'approved', $5, $6, NOW())`,
+      [id, plan_type || tenant.plan_type || 'monthly', Number(amount_paid), days, notes || 'Manual license renewal by Super Admin', req.superAdmin.id]
+    );
+  }
+
+  clearTenantCache(tenant.slug);
+
+  res.json({ ok: true, tenant: updated });
+}));
+
+/**
  * GET /api/superadmin/payments
  * Lists all subscription payment proofs submitted by tenants
  */

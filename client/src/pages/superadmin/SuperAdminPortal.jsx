@@ -156,7 +156,27 @@ const Icons = {
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="2" y="3" width="20" height="14" rx="2" ry="2" /><line x1="2" y1="20" x2="22" y2="20" />
     </svg>
-  )
+  ),
+  key: (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 2l-2 2m-1.5 1.5L16 7l-1.5-1.5L13 7l-1.5-1.5L10 7M2 13a6 6 0 1 0 12 0 6 6 0 0 0-12 0z" />
+    </svg>
+  ),
+  copy: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  ),
+  database: (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" /><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
+    </svg>
+  ),
+  calendar: (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" />
+    </svg>
+  ),
 };
 
 const saApi = {
@@ -190,8 +210,11 @@ const saApi = {
   login: (email, password) => saApi.request('/api/superadmin/login', { method: 'POST', body: { email, password } }),
   getMetrics: () => saApi.request('/api/superadmin/metrics'),
   getTenants: () => saApi.request('/api/superadmin/tenants'),
+  getTenant: (id) => saApi.request(`/api/superadmin/tenants/${id}`),
   createTenant: (body) => saApi.request('/api/superadmin/tenants', { method: 'POST', body }),
   updateTenant: (id, body) => saApi.request(`/api/superadmin/tenants/${id}`, { method: 'PATCH', body }),
+  resetPassword: (id) => saApi.request(`/api/superadmin/tenants/${id}/reset-password`, { method: 'POST' }),
+  renewTenant: (id, body) => saApi.request(`/api/superadmin/tenants/${id}/renew`, { method: 'POST', body }),
   getPayments: (status) => saApi.request(`/api/superadmin/payments${status ? `?status=${status}` : ''}`),
   approvePayment: (id) => saApi.request(`/api/superadmin/payments/${id}/approve`, { method: 'POST' }),
   rejectPayment: (id, notes) => saApi.request(`/api/superadmin/payments/${id}/reject`, { method: 'POST', body: { notes } }),
@@ -201,21 +224,27 @@ const saApi = {
   updateSettings: (body) => saApi.request('/api/superadmin/settings', { method: 'PUT', body }),
 };
 
-const getPageFromHash = () => {
-  const h = (window.location.hash || '').replace(/^#\/?/, '').split('?')[0].replace(/\/$/, '');
-  if (h === 'clients/new' || h === 'clients-new') return 'clients-new';
-  if (['dashboard', 'clients', 'payments', 'plans', 'settings'].includes(h)) return h;
-  return 'dashboard';
+const getRouteFromHash = () => {
+  const raw = (window.location.hash || '').replace(/^#\/?/, '').split('?')[0].replace(/\/$/, '');
+  const parts = raw.split('/');
+  if (parts[0] === 'clients' && parts[1] === 'new') return { page: 'clients-new', id: null };
+  if (parts[0] === 'clients' && parts[1]) return { page: 'client-detail', id: parts[1] };
+  if (['dashboard', 'clients', 'payments', 'plans', 'settings'].includes(parts[0])) return { page: parts[0], id: null };
+  return { page: 'dashboard', id: null };
 };
 
 export default function SuperAdminPortal() {
   const [authed, setAuthed] = useState(saApi.isLoggedIn());
-  const [currentPage, setCurrentPageState] = useState(getPageFromHash); // 'dashboard', 'clients', 'clients-new', 'payments', 'plans', 'settings'
+  const [routeState, setRouteState] = useState(getRouteFromHash);
+  const currentPage = routeState.page;
+  const currentTenantId = routeState.id;
 
-  const setCurrentPage = useCallback((page) => {
-    setCurrentPageState(page);
+  const setCurrentPage = useCallback((page, id = null) => {
+    setRouteState({ page, id });
     if (page === 'clients-new') {
       window.location.hash = '#/clients/new';
+    } else if (page === 'client-detail' && id) {
+      window.location.hash = `#/clients/${id}`;
     } else {
       window.location.hash = `#/${page}`;
     }
@@ -223,7 +252,7 @@ export default function SuperAdminPortal() {
 
   useEffect(() => {
     const onHash = () => {
-      setCurrentPageState(getPageFromHash());
+      setRouteState(getRouteFromHash());
     };
     window.addEventListener('hashchange', onHash);
     if (!window.location.hash || window.location.hash === '#/') {
@@ -418,14 +447,23 @@ export default function SuperAdminPortal() {
         <header className="nc-topbar">
           <div>
             <div className="nc-breadcrumb">
-              <span className="nc-breadcrumb-link">Nivaas Console</span>
+              <span className="nc-breadcrumb-link" onClick={() => setCurrentPage('dashboard')} style={{ cursor: 'pointer' }}>Nivaas Console</span>
               <span>&gt;</span>
-              <span style={{ textTransform: 'capitalize' }}>{currentPage.replace('-', ' ')}</span>
+              {currentPage === 'client-detail' ? (
+                <>
+                  <span className="nc-breadcrumb-link" onClick={() => setCurrentPage('clients')} style={{ cursor: 'pointer' }}>Clients</span>
+                  <span>&gt;</span>
+                  <span>Tenant Details</span>
+                </>
+              ) : (
+                <span style={{ textTransform: 'capitalize' }}>{currentPage.replace('-', ' ')}</span>
+              )}
             </div>
             <h1 className="nc-topbar-title">
               {currentPage === 'dashboard' && 'Console Dashboard'}
               {currentPage === 'clients' && 'Client Management'}
               {currentPage === 'clients-new' && 'Create New Client'}
+              {currentPage === 'client-detail' && 'Tenant Details & Infrastructure'}
               {currentPage === 'payments' && 'Payments & Audits'}
               {currentPage === 'plans' && 'Subscription Tiers'}
               {currentPage === 'settings' && 'Platform Settings'}
@@ -780,14 +818,8 @@ export default function SuperAdminPortal() {
 
                                     <button
                                       className="nc-btn"
-                                      style={{ padding: '6px 12px', fontSize: 12, border: 0, color: '#1A73E8', background: 'transparent' }}
-                                      onClick={() => {
-                                        const days = prompt('Enter days to extend subscription:', '30');
-                                        if (days) {
-                                          saApi.updateTenant(t.id, { extendDays: Number(days) })
-                                            .then(() => { say(`Extended ${t.name} by ${days} days!`); loadAll(); });
-                                        }
-                                      }}
+                                      style={{ padding: '6px 12px', fontSize: 12, border: 0, color: '#1A73E8', background: 'transparent', fontWeight: 700 }}
+                                      onClick={() => setCurrentPage('client-detail', t.id)}
                                     >
                                       Details &rarr;
                                     </button>
@@ -827,6 +859,17 @@ export default function SuperAdminPortal() {
                   loadAll();
                   setCurrentPage('clients');
                 }}
+              />
+            )}
+
+            {/* PAGE 3B: CLIENT DETAIL VIEW (Screenshot / ClientDetail.jsx 1:1 match) */}
+            {currentPage === 'client-detail' && (
+              <ClientDetailPage
+                tenantId={currentTenantId}
+                plans={plans}
+                onBack={() => setCurrentPage('clients')}
+                say={say}
+                onTenantUpdated={loadAll}
               />
             )}
 
@@ -1308,7 +1351,625 @@ function PaymentsPage({ payments, pendingPayments, confirmedPayments, rejectedPa
 }
 
 /* ==========================================================================
-   SUB-PAGE: SUBSCRIPTION PLANS (Screenshot 5 1:1 match with Edit Plan)
+   SUB-PAGE: CLIENT DETAIL VIEW (Matches ClientDetail.jsx from digiink_admin)
+   ========================================================================== */
+function ClientDetailPage({ tenantId, plans, onBack, say, onTenantUpdated }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+
+  // Renew Dialog
+  const [renewOpen, setRenewOpen] = useState(false);
+  const [renewLoading, setRenewLoading] = useState(false);
+  const [renewPlan, setRenewPlan] = useState('monthly');
+  const [renewDurationDays, setRenewDurationDays] = useState(30);
+  const [renewAmount, setRenewAmount] = useState('');
+  const [renewNotes, setRenewNotes] = useState('');
+
+  // Hard Reset Password Dialog
+  const [resetModalOpen, setResetModalOpen] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetResult, setResetResult] = useState(null);
+  const [copiedKey, setCopiedKey] = useState(false);
+
+  const fetchClient = useCallback(async () => {
+    if (!tenantId) return;
+    setLoading(true);
+    setError('');
+    try {
+      const res = await saApi.getTenant(tenantId);
+      setData(res);
+      if (res?.tenant) {
+        setRenewPlan(res.tenant.plan_type || 'monthly');
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to load tenant details');
+    } finally {
+      setLoading(false);
+    }
+  }, [tenantId]);
+
+  useEffect(() => {
+    fetchClient();
+  }, [fetchClient]);
+
+  const handleHardResetPassword = async () => {
+    setResetLoading(true);
+    setError('');
+    setSuccess('');
+    try {
+      const res = await saApi.resetPassword(tenantId);
+      if (res.success && res.data) {
+        setResetResult(res.data);
+        setSuccess(`Password successfully reset for ${res.data.businessName}.`);
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to reset client admin password.');
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
+  const copyToClipboard = (text) => {
+    navigator.clipboard.writeText(text);
+    setCopiedKey(true);
+    setTimeout(() => setCopiedKey(false), 2500);
+  };
+
+  const handleRenew = async (e) => {
+    e.preventDefault();
+    setRenewLoading(true);
+    setError('');
+    setSuccess('');
+    try {
+      await saApi.renewTenant(tenantId, {
+        plan_type: renewPlan,
+        duration_days: renewDurationDays,
+        amount_paid: renewAmount ? Number(renewAmount) : 0,
+        notes: renewNotes,
+      });
+      setSuccess('Client subscription renewed & extended successfully!');
+      setRenewOpen(false);
+      fetchClient();
+      if (onTenantUpdated) onTenantUpdated();
+    } catch (err) {
+      setError(err.message || 'Renewal failed.');
+    } finally {
+      setRenewLoading(false);
+    }
+  };
+
+  const handleStatusToggle = async () => {
+    const t = data?.tenant;
+    if (!t) return;
+    const nextStatus = t.subscription_status === 'suspended' ? 'active' : 'suspended';
+    if (!window.confirm(`Are you sure you want to ${nextStatus === 'active' ? 'activate' : 'suspend'} this client instance?`)) return;
+    try {
+      await saApi.updateTenant(tenantId, { status: nextStatus });
+      setSuccess(`Tenant marked as ${nextStatus}.`);
+      fetchClient();
+      if (onTenantUpdated) onTenantUpdated();
+    } catch (err) {
+      setError(err.message || 'Status update failed.');
+    }
+  };
+
+  if (loading) {
+    return (
+      <div style={{ textAlign: 'center', padding: '100px 20px', color: '#5F6368' }}>
+        <div style={{ width: 36, height: 36, border: '3px solid #E8F0FE', borderTopColor: '#1A73E8', borderRadius: '50%', margin: '0 auto 16px', animation: 'spin 0.8s linear infinite' }} />
+        <div>Loading tenant details...</div>
+      </div>
+    );
+  }
+
+  const tenant = data?.tenant;
+  const payments = data?.payments || [];
+  if (!tenant) {
+    return (
+      <div className="nc-card" style={{ textAlign: 'center', padding: 48 }}>
+        <h3 style={{ color: '#D93025' }}>Tenant Not Found</h3>
+        <button className="nc-btn" onClick={onBack} style={{ marginTop: 16 }}>Back to Clients</button>
+      </div>
+    );
+  }
+
+  const end = new Date(tenant.subscription_ends_at || tenant.trial_ends_at);
+  const now = new Date();
+  const diffDays = Math.ceil((end - now) / (1000 * 60 * 60 * 24));
+  const isExpired = diffDays <= 0;
+  const isExpiringSoon = diffDays > 0 && diffDays <= 7;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+      {/* 1. Top Google Cloud Console Hero Banner */}
+      <div className="nc-card" style={{ padding: '24px 28px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 20 }}>
+          {/* Left Info */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <button
+              onClick={onBack}
+              className="nc-btn"
+              style={{ width: 42, height: 42, padding: 0, borderRadius: '50%', display: 'grid', placeItems: 'center' }}
+              title="Back to Clients"
+            >
+              {Icons.back}
+            </button>
+
+            <div style={{
+              width: 52, height: 52, borderRadius: '50%', background: '#E8F0FE',
+              color: '#1A73E8', fontSize: 20, fontWeight: 800, display: 'grid', placeItems: 'center',
+              border: '1px solid #D2E3FC'
+            }}>
+              {tenant.name ? tenant.name[0].toUpperCase() : 'T'}
+            </div>
+
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <h2 style={{ fontSize: 22, fontWeight: 800, color: '#202124', margin: 0 }}>
+                  {tenant.name}
+                </h2>
+                <span className="nc-pill nc-pill-blue" style={{ fontFamily: 'monospace' }}>
+                  CLI{String(tenant.slug).slice(0, 3).toUpperCase()}
+                </span>
+                <span className={`nc-pill ${tenant.subscription_status === 'active' ? 'nc-pill-green' : 'nc-pill-red'}`}>
+                  {tenant.subscription_status}
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4, fontSize: 13, color: '#5F6368' }}>
+                <span>Database: <b style={{ color: '#202124' }}>{tenant.db_name}</b></span>
+                <span>&bull;</span>
+                <a
+                  href={`https://${tenant.slug}.nivaas.space`}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: '#1A73E8', fontWeight: 700, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                >
+                  <span>{tenant.slug}.nivaas.space</span>
+                  {Icons.launch}
+                </a>
+              </div>
+            </div>
+          </div>
+
+          {/* Right Action Buttons */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <button
+              className="nc-btn"
+              onClick={() => setRenewOpen(true)}
+              style={{ background: '#1E8E3E', color: '#FFFFFF', borderColor: '#1E8E3E', fontWeight: 700 }}
+            >
+              {Icons.refresh}
+              <span>Renew / Extend</span>
+            </button>
+
+            <a
+              href={`https://${tenant.slug}.nivaas.space`}
+              target="_blank"
+              rel="noreferrer"
+              className="nc-btn nc-btn-dark"
+              style={{ fontWeight: 700, textDecoration: 'none' }}
+            >
+              <span>Login As Client</span>
+              {Icons.launch}
+            </a>
+
+            <button
+              className="nc-btn"
+              onClick={() => {
+                setResetResult(null);
+                setResetModalOpen(true);
+              }}
+              style={{ background: '#E8F0FE', color: '#1A73E8', borderColor: '#D2E3FC', fontWeight: 700 }}
+            >
+              {Icons.key}
+              <span>Reset Password</span>
+            </button>
+
+            <button
+              className="nc-btn"
+              onClick={handleStatusToggle}
+              style={{
+                color: tenant.subscription_status === 'suspended' ? '#1E8E3E' : '#D93025',
+                borderColor: tenant.subscription_status === 'suspended' ? '#CEEAD6' : '#FAD2CF',
+                background: tenant.subscription_status === 'suspended' ? '#E6F4EA' : '#FCE8E6',
+                fontWeight: 700
+              }}
+            >
+              {tenant.subscription_status === 'suspended' ? Icons.check : Icons.lock}
+              <span>{tenant.subscription_status === 'suspended' ? 'Unlock Access' : 'Suspend Access'}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Alerts */}
+      {error && (
+        <div style={{ background: '#FCE8E6', color: '#D93025', padding: '12px 18px', borderRadius: 12, border: '1px solid #FAD2CF', fontSize: 13.5, fontWeight: 600 }}>
+          {error}
+        </div>
+      )}
+      {success && (
+        <div style={{ background: '#E6F4EA', color: '#1E8E3E', padding: '12px 18px', borderRadius: 12, border: '1px solid #CEEAD6', fontSize: 13.5, fontWeight: 600 }}>
+          {success}
+        </div>
+      )}
+
+      {/* 2. 4 Metric Cards Grid */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+        <div className="nc-kpi-card">
+          <div className="nc-kpi-header">
+            <span className="nc-kpi-label">ACTIVE PLAN TIER</span>
+            <div className="nc-icon-badge" style={{ background: '#E8F0FE', color: '#1A73E8' }}>
+              {Icons.ribbon}
+            </div>
+          </div>
+          <div className="nc-kpi-val" style={{ textTransform: 'capitalize', fontSize: 20 }}>
+            {tenant.plan_type} Tier
+          </div>
+          <div className="nc-kpi-sub">Enterprise Quota Active</div>
+        </div>
+
+        <div className="nc-kpi-card">
+          <div className="nc-kpi-header">
+            <span className="nc-kpi-label">SYSTEM STATUS</span>
+            <div className="nc-icon-badge" style={{ background: tenant.subscription_status === 'active' ? '#E6F4EA' : '#FCE8E6', color: tenant.subscription_status === 'active' ? '#1E8E3E' : '#D93025' }}>
+              {Icons.shield}
+            </div>
+          </div>
+          <div className="nc-kpi-val" style={{ textTransform: 'capitalize', color: tenant.subscription_status === 'active' ? '#1E8E3E' : '#D93025' }}>
+            {tenant.subscription_status}
+          </div>
+          <div className="nc-kpi-sub">Access Gateway Online</div>
+        </div>
+
+        <div className="nc-kpi-card">
+          <div className="nc-kpi-header">
+            <span className="nc-kpi-label">SUBSCRIPTION EXPIRY</span>
+            <div className="nc-icon-badge" style={{ background: isExpiringSoon ? '#FEF7E0' : '#E6F4EA', color: isExpiringSoon ? '#B06000' : '#1E8E3E' }}>
+              {Icons.calendar}
+            </div>
+          </div>
+          <div className="nc-kpi-val" style={{ fontSize: 20 }}>
+            {end.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+          </div>
+          <div className="nc-kpi-sub">
+            <span className={`nc-pill ${isExpired ? 'nc-pill-red' : isExpiringSoon ? 'nc-pill-yellow' : 'nc-pill-green'}`} style={{ fontSize: 11, padding: '2px 8px' }}>
+              {isExpired ? 'Expired' : `${diffDays} days left`}
+            </span>
+          </div>
+        </div>
+
+        <div className="nc-kpi-card">
+          <div className="nc-kpi-header">
+            <span className="nc-kpi-label">ISOLATED DATABASE</span>
+            <div className="nc-icon-badge" style={{ background: '#E8F0FE', color: '#1A73E8' }}>
+              {Icons.database}
+            </div>
+          </div>
+          <div className="nc-kpi-val" style={{ fontSize: 18, color: '#1A73E8', fontFamily: 'monospace' }}>
+            {tenant.db_name}
+          </div>
+          <div className="nc-kpi-sub">PostgreSQL 16 Dedicated</div>
+        </div>
+      </div>
+
+      {/* 3. 2-Column Main Section */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 1fr', gap: 24 }}>
+        {/* Left Card: Organization & Technical Profile */}
+        <div className="nc-card" style={{ padding: 0, overflow: 'hidden' }}>
+          <div style={{ padding: '18px 24px', borderBottom: '1px solid #E0E3E7', display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ width: 4, height: 18, background: '#1A73E8', borderRadius: 2 }} />
+            <span style={{ color: '#1A73E8', display: 'flex' }}>{Icons.building}</span>
+            <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: '#202124' }}>
+              Tenant Organization Profile
+            </h3>
+          </div>
+
+          <div style={{ padding: '16px 24px' }}>
+            <div className="nc-detail-row">
+              <span className="nc-detail-label">{Icons.building} Business Name</span>
+              <span className="nc-detail-val">{tenant.name}</span>
+            </div>
+            <div className="nc-detail-row">
+              <span className="nc-detail-label">{Icons.ribbon} Tenant Code</span>
+              <span className="nc-detail-val">
+                <span className="nc-pill nc-pill-blue" style={{ fontFamily: 'monospace' }}>
+                  CLI{String(tenant.slug).slice(0, 3).toUpperCase()}
+                </span>
+              </span>
+            </div>
+            <div className="nc-detail-row">
+              <span className="nc-detail-label">{Icons.clients} Primary Owner / Contact</span>
+              <span className="nc-detail-val">{tenant.admin_name}</span>
+            </div>
+            <div className="nc-detail-row">
+              <span className="nc-detail-label">{Icons.globe} Email Address</span>
+              <span className="nc-detail-val">
+                <a href={`mailto:${tenant.admin_email}`} style={{ color: '#1A73E8', textDecoration: 'none' }}>
+                  {tenant.admin_email}
+                </a>
+              </span>
+            </div>
+            <div className="nc-detail-row">
+              <span className="nc-detail-label">{Icons.payments} Phone Number</span>
+              <span className="nc-detail-val">{tenant.phone || '—'}</span>
+            </div>
+            <div className="nc-detail-row">
+              <span className="nc-detail-label">{Icons.globe} App Subdomain Route</span>
+              <span className="nc-detail-val">
+                <a href={`https://${tenant.slug}.nivaas.space`} target="_blank" rel="noreferrer" style={{ color: '#1A73E8', fontWeight: 700, textDecoration: 'none' }}>
+                  {tenant.slug}.nivaas.space &rarr;
+                </a>
+              </span>
+            </div>
+            <div className="nc-detail-row">
+              <span className="nc-detail-label">{Icons.database} Physical Database</span>
+              <span className="nc-detail-val" style={{ fontFamily: 'monospace', color: '#1A73E8' }}>
+                {tenant.db_name}
+              </span>
+            </div>
+            <div className="nc-detail-row">
+              <span className="nc-detail-label">{Icons.shield} Isolation Architecture</span>
+              <span className="nc-detail-val">Database-per-Tenant (Isolated Data Plane)</span>
+            </div>
+            <div className="nc-detail-row">
+              <span className="nc-detail-label">{Icons.calendar} Onboarded Date</span>
+              <span className="nc-detail-val">
+                {new Date(tenant.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Right Card: Subscription Entitlements & History */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+          {/* Entitlements Card */}
+          <div className="nc-card" style={{ padding: 24 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+              <div style={{ width: 4, height: 18, background: '#1E8E3E', borderRadius: 2 }} />
+              <span style={{ color: '#1E8E3E', display: 'flex' }}>{Icons.plans}</span>
+              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: '#202124' }}>
+                Included Features &amp; Entitlements
+              </h3>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 14px' }}>
+              {[
+                'Manager Role Access',
+                'Site Survey Module',
+                'Quotation & Invoice PDF',
+                'Reports & Analytics',
+                'CSV Import / Export',
+                'Bulk Lead Reassignment',
+                'Advanced Business BI',
+                'Activity Audit Logs',
+                'Push Notifications (FCM)',
+                'Android Mobile App',
+                'Multi-Branch Support',
+                '24/7 Priority Support',
+              ].map((feat) => (
+                <div key={feat} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#3C4043' }}>
+                  <span style={{ color: '#1E8E3E', display: 'flex' }}>{Icons.check}</span>
+                  <span>{feat}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Payment & Audit History Card */}
+          <div className="nc-card" style={{ padding: 0, overflow: 'hidden' }}>
+            <div style={{ padding: '16px 20px', borderBottom: '1px solid #E0E3E7', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h4 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: '#202124' }}>
+                Payment &amp; Renewal Audit History
+              </h4>
+              <span style={{ fontSize: 12, color: '#5F6368' }}>{payments.length} records</span>
+            </div>
+
+            <div className="nc-table-wrap">
+              <table className="nc-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Plan</th>
+                    <th>Amount</th>
+                    <th>UTR / Ref</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {payments.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} style={{ textAlign: 'center', color: '#5F6368', padding: '24px 16px' }}>
+                        No past renewal records found.
+                      </td>
+                    </tr>
+                  ) : (
+                    payments.map((p) => (
+                      <tr key={p.id}>
+                        <td style={{ fontSize: 12.5 }}>
+                          {new Date(p.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                        </td>
+                        <td style={{ textTransform: 'capitalize', fontWeight: 600 }}>{p.plan_type}</td>
+                        <td style={{ color: '#1E8E3E', fontWeight: 700 }}>{money(p.amount)}</td>
+                        <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{p.utr_number || '—'}</td>
+                        <td>
+                          <span className={`nc-pill ${p.status === 'approved' ? 'nc-pill-green' : 'nc-pill-yellow'}`}>
+                            {p.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* RENEW SUBSCRIPTION MODAL */}
+      {renewOpen && (
+        <div className="nc-modal-scrim" onMouseDown={(e) => e.target === e.currentTarget && setRenewOpen(false)}>
+          <div className="nc-modal" style={{ width: 'min(500px, 94vw)' }}>
+            <div style={{ padding: '20px 24px', borderBottom: '1px solid #E0E3E7', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#202124' }}>
+                Extend / Renew Subscription
+              </h3>
+              <button className="nc-btn" onClick={() => setRenewOpen(false)} style={{ border: 0, padding: 6 }}>
+                {Icons.cross}
+              </button>
+            </div>
+
+            <form onSubmit={handleRenew} style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#5F6368', marginBottom: 6 }}>Select Plan Tier</label>
+                <select
+                  value={renewPlan}
+                  onChange={(e) => setRenewPlan(e.target.value)}
+                  style={{ width: '100%', padding: '11px 14px', borderRadius: 8, border: '1px solid #DADCE0', fontSize: 14, background: '#fff' }}
+                >
+                  <option value="starter">Starter Tier (₹2,999 /mo)</option>
+                  <option value="professional">Professional Tier (₹24,999 /6 mo)</option>
+                  <option value="business">Business Tier (₹44,999 /yr)</option>
+                  <option value="enterprise">Enterprise Tier (₹99,999 One-Time)</option>
+                </select>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#5F6368', marginBottom: 6 }}>Renewal Duration</label>
+                <select
+                  value={renewDurationDays}
+                  onChange={(e) => setRenewDurationDays(Number(e.target.value))}
+                  style={{ width: '100%', padding: '11px 14px', borderRadius: 8, border: '1px solid #DADCE0', fontSize: 14, background: '#fff' }}
+                >
+                  <option value={7}>7 Days (Trial Extension)</option>
+                  <option value={30}>1 Month (+30 Days)</option>
+                  <option value={90}>3 Months (+90 Days)</option>
+                  <option value={180}>6 Months (+180 Days)</option>
+                  <option value={365}>1 Year (+365 Days)</option>
+                  <option value={3650}>Lifetime (+10 Years)</option>
+                </select>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#5F6368', marginBottom: 6 }}>Amount Collected (₹)</label>
+                <input
+                  type="number"
+                  placeholder="e.g. 2999"
+                  value={renewAmount}
+                  onChange={(e) => setRenewAmount(e.target.value)}
+                  style={{ width: '100%', padding: '11px 14px', borderRadius: 8, border: '1px solid #DADCE0', fontSize: 14 }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#5F6368', marginBottom: 6 }}>Notes / UTR</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Bank Wire / UPI Ref"
+                  value={renewNotes}
+                  onChange={(e) => setRenewNotes(e.target.value)}
+                  style={{ width: '100%', padding: '11px 14px', borderRadius: 8, border: '1px solid #DADCE0', fontSize: 14 }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10 }}>
+                <button type="button" className="nc-btn" onClick={() => setRenewOpen(false)}>
+                  Cancel
+                </button>
+                <button type="submit" className="nc-btn nc-btn-primary" disabled={renewLoading}>
+                  {renewLoading ? 'Extending...' : 'Confirm Renewal'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* HARD RESET PASSWORD MODAL (Exact match from digiink_admin) */}
+      {resetModalOpen && (
+        <div className="nc-modal-scrim" onMouseDown={(e) => e.target === e.currentTarget && setResetModalOpen(false)}>
+          <div className="nc-modal" style={{ width: 'min(540px, 94vw)' }}>
+            <div style={{ padding: '20px 24px', borderBottom: '1px solid #E0E3E7', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ width: 34, height: 34, borderRadius: '50%', background: '#FEF7E0', color: '#B06000', display: 'grid', placeItems: 'center' }}>
+                  {Icons.key}
+                </div>
+                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#202124' }}>
+                  Hard Reset Admin Password
+                </h3>
+              </div>
+              <button className="nc-btn" onClick={() => setResetModalOpen(false)} style={{ border: 0, padding: 6 }}>
+                {Icons.cross}
+              </button>
+            </div>
+
+            <div style={{ padding: 24 }}>
+              {!resetResult ? (
+                <div>
+                  <p style={{ color: '#5F6368', fontSize: 14, lineHeight: 1.6, margin: '0 0 16px 0' }}>
+                    This will directly generate a new one-time temporary master password for <b>{tenant.name}</b> in its isolated database (<b>{tenant.db_name}</b>).
+                  </p>
+                  <div style={{ background: '#F8F9FA', padding: 14, borderRadius: 10, border: '1px solid #E0E3E7', fontSize: 13, marginBottom: 20 }}>
+                    <div>Login Email: <b style={{ color: '#202124' }}>{tenant.admin_email}</b></div>
+                    <div>Portal: <b style={{ color: '#1A73E8' }}>https://{tenant.slug}.nivaas.space</b></div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+                    <button className="nc-btn" onClick={() => setResetModalOpen(false)}>
+                      Cancel
+                    </button>
+                    <button className="nc-btn nc-btn-primary" onClick={handleHardResetPassword} disabled={resetLoading}>
+                      {resetLoading ? 'Generating...' : 'Confirm & Reset'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <div style={{ background: '#E6F4EA', color: '#1E8E3E', padding: '12px 16px', borderRadius: 10, fontSize: 13.5, fontWeight: 700, marginBottom: 16 }}>
+                    New password successfully generated in {tenant.db_name}!
+                  </div>
+
+                  <div style={{ background: '#0F172A', color: '#FFFFFF', padding: 20, borderRadius: 12, marginBottom: 16 }}>
+                    <div style={{ fontSize: 11, color: '#94A3B8', fontWeight: 700, letterSpacing: '0.05em' }}>ONE-TIME TEMPORARY PASSWORD</div>
+                    <div style={{ fontSize: 24, fontWeight: 800, fontFamily: 'monospace', color: '#FBBF24', margin: '8px 0 14px' }}>
+                      {resetResult.tempPassword}
+                    </div>
+                    <div style={{ fontSize: 12, color: '#94A3B8', marginBottom: 14 }}>
+                      Username: <b>{resetResult.adminUsername}</b><br />
+                      Portal: <b>{resetResult.portalUrl}</b>
+                    </div>
+
+                    <button
+                      className="nc-btn"
+                      onClick={() => copyToClipboard(`Portal: ${resetResult.portalUrl}\nUsername: ${resetResult.adminUsername}\nTemp Password: ${resetResult.tempPassword}`)}
+                      style={{ background: copiedKey ? '#16A34A' : '#0284C7', color: '#FFFFFF', border: 0, fontWeight: 700, fontSize: 13 }}
+                    >
+                      {copiedKey ? Icons.check : Icons.copy}
+                      <span>{copiedKey ? 'Copied to Clipboard!' : 'Copy All Credentials'}</span>
+                    </button>
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <button className="nc-btn nc-btn-primary" onClick={() => { setResetModalOpen(false); setResetResult(null); }}>
+                      Done
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ==========================================================================
+   SUB-PAGE: SUBSCRIPTION PLANS (Screenshot 5 1:1 match with Edit Rate)
    ========================================================================== */
 function PlansPage({ plans, onEditPlan }) {
   const defaultPlans = [
@@ -1316,7 +1977,7 @@ function PlansPage({ plans, onEditPlan }) {
       id: 'starter',
       name: 'Starter Tier',
       tier_subtitle: 'Monthly Recurring Subscription',
-      price: 4999,
+      price: 2999,
       duration_text: '/month',
       user_limit: '5 Users',
       leads_limit: '500 Leads/mo',
@@ -1325,7 +1986,7 @@ function PlansPage({ plans, onEditPlan }) {
     {
       id: 'professional',
       name: 'Professional Tier',
-      tier_subtitle: 'Half-Yearly Commitment',
+      tier_subtitle: 'Half-Yearly Growth Commitment',
       price: 24999,
       duration_text: '/6 months',
       user_limit: '15 Users',
@@ -1345,7 +2006,7 @@ function PlansPage({ plans, onEditPlan }) {
     {
       id: 'enterprise',
       name: 'Enterprise Tier',
-      tier_subtitle: 'Founder Lifetime Deal',
+      tier_subtitle: 'Founder Lifetime Access',
       price: 99999,
       duration_text: 'One-Time',
       user_limit: 'Unlimited Users',
@@ -1356,19 +2017,19 @@ function PlansPage({ plans, onEditPlan }) {
 
   const displayPlans = plans.length > 0 ? plans : defaultPlans;
 
-  const featureList = [
-    { key: 'manager_role', label: 'Manager Role Access' },
-    { key: 'site_survey', label: 'Site Survey Module' },
-    { key: 'quotation_invoice', label: 'Quotation & Invoice PDF' },
-    { key: 'reports_analytics', label: 'Reports & Analytics' },
-    { key: 'csv_import_export', label: 'CSV Import / Export' },
-    { key: 'bulk_reassign', label: 'Bulk Lead Reassignment' },
-    { key: 'advanced_bi', label: 'Advanced Business BI' },
-    { key: 'activity_audit_logs', label: 'Activity Audit Logs' },
-    { key: 'push_notifications', label: 'Push Notifications (FCM)' },
-    { key: 'android_app', label: 'Android Mobile App' },
-    { key: 'multi_branch', label: 'Multi-Branch Support' },
-    { key: 'priority_support', label: '24/7 Priority Support' },
+  const features12 = [
+    'Manager Role Access',
+    'Site Survey Module',
+    'Quotation & Invoice PDF',
+    'Reports & Analytics',
+    'CSV Import / Export',
+    'Bulk Lead Reassignment',
+    'Advanced Business BI',
+    'Activity Audit Logs',
+    'Push Notifications (FCM)',
+    'Android Mobile App',
+    'Multi-Branch Support',
+    '24/7 Priority Support',
   ];
 
   return (
@@ -1387,20 +2048,6 @@ function PlansPage({ plans, onEditPlan }) {
       <div className="nc-plans-grid">
         {displayPlans.map((plan, idx) => {
           const isEnterprise = plan.id === 'enterprise' || idx === 3;
-          const planFeatures = plan.features || {
-            manager_role: true,
-            quotation_invoice: true,
-            csv_import_export: true,
-            advanced_bi: idx >= 1,
-            push_notifications: idx >= 1,
-            multi_branch: idx >= 2,
-            site_survey: idx >= 1,
-            reports_analytics: idx >= 1,
-            bulk_reassign: idx >= 2,
-            activity_audit_logs: idx >= 1,
-            android_app: idx >= 2,
-            priority_support: idx >= 2,
-          };
 
           return (
             <div key={plan.id} className="nc-plan-card">
@@ -1413,11 +2060,15 @@ function PlansPage({ plans, onEditPlan }) {
                       background: isEnterprise ? 'rgba(255,255,255,0.2)' : '#E8F0FE',
                       color: isEnterprise ? '#fff' : '#1A73E8', display: 'grid', placeItems: 'center'
                     }}>
-                      {Icons.plans}
+                      {Icons.ribbon}
                     </div>
                     <div>
-                      <h3 style={{ margin: 0, fontSize: 17, fontWeight: 800, color: '#202124' }}>{plan.name}</h3>
-                      <div style={{ fontSize: 12, color: isEnterprise ? '#E8F0FE' : '#5F6368' }}>{plan.tier_subtitle}</div>
+                      <h3 style={{ margin: 0, fontSize: 17, fontWeight: 800, color: isEnterprise ? '#fff' : '#202124' }}>
+                        {plan.name}
+                      </h3>
+                      <div style={{ fontSize: 12, color: isEnterprise ? '#E8F0FE' : '#5F6368' }}>
+                        {plan.tier_subtitle}
+                      </div>
                     </div>
                   </div>
 
@@ -1439,7 +2090,7 @@ function PlansPage({ plans, onEditPlan }) {
 
                 {/* Price Display */}
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginTop: 16 }}>
-                  <span className="price-val" style={{ fontSize: 28, fontWeight: 900, color: '#202124' }}>
+                  <span className="price-val" style={{ fontSize: 28, fontWeight: 900, color: isEnterprise ? '#fff' : '#202124' }}>
                     {money(plan.price)}
                   </span>
                   <span style={{ fontSize: 13, color: isEnterprise ? '#E8F0FE' : '#5F6368' }}>
@@ -1457,28 +2108,23 @@ function PlansPage({ plans, onEditPlan }) {
                 </div>
               </div>
 
-              {/* Included Features 2 Column Checklist */}
+              {/* Included Features 2 Column Checklist (All 12 Features Enabled) */}
               <div style={{ padding: '20px 28px', flex: 1, display: 'flex', flexDirection: 'column' }}>
                 <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.06em', color: '#5F6368', textTransform: 'uppercase', marginBottom: 14 }}>
                   INCLUDED FEATURES &amp; PERMISSIONS
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 16px', fontSize: 12.5 }}>
-                  {featureList.map((f) => {
-                    const enabled = Boolean(planFeatures[f.key]);
-                    return (
-                      <div key={f.key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        {enabled ? (
-                          <span style={{ color: '#1E8E3E', display: 'grid', placeItems: 'center' }}>{Icons.check}</span>
-                        ) : (
-                          <span style={{ color: '#94A3B8', display: 'grid', placeItems: 'center' }}>{Icons.cross}</span>
-                        )}
-                        <span style={{ color: enabled ? '#202124' : '#5F6368', fontWeight: enabled ? 500 : 400 }}>
-                          {f.label}
-                        </span>
-                      </div>
-                    );
-                  })}
+                  {features12.map((fName) => (
+                    <div key={fName} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ color: '#1E8E3E', display: 'grid', placeItems: 'center' }}>
+                        {Icons.check}
+                      </span>
+                      <span style={{ color: '#202124', fontWeight: 500 }}>
+                        {fName}
+                      </span>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
@@ -1490,156 +2136,66 @@ function PlansPage({ plans, onEditPlan }) {
 }
 
 /* ==========================================================================
-   MODAL: EDIT PLAN (PRICE, LIMITS, FEATURES)
+   MODAL: EDIT PLAN (ONLY RATES AS REQUESTED)
    ========================================================================== */
 function EditPlanModal({ plan, onClose, onSave }) {
-  const [name, setName] = useState(plan.name || '');
-  const [tierSubtitle, setTierSubtitle] = useState(plan.tier_subtitle || '');
   const [price, setPrice] = useState(plan.price || 0);
-  const [durationText, setDurationText] = useState(plan.duration_text || '');
-  const [userLimit, setUserLimit] = useState(plan.user_limit || '');
-  const [leadsLimit, setLeadsLimit] = useState(plan.leads_limit || '');
-  const [features, setFeatures] = useState(plan.features || {});
   const [saving, setSaving] = useState(false);
-
-  const toggleFeature = (k) => {
-    setFeatures(prev => ({ ...prev, [k]: !prev[k] }));
-  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setSaving(true);
     await onSave({
-      name,
-      tier_subtitle: tierSubtitle,
       price: Number(price),
-      duration_text: durationText,
-      user_limit: userLimit,
-      leads_limit: leadsLimit,
-      features,
     });
     setSaving(false);
   };
 
-  const featureLabels = [
-    { key: 'manager_role', label: 'Manager Role Access' },
-    { key: 'site_survey', label: 'Site Survey Module' },
-    { key: 'quotation_invoice', label: 'Quotation & Invoice PDF' },
-    { key: 'reports_analytics', label: 'Reports & Analytics' },
-    { key: 'csv_import_export', label: 'CSV Import / Export' },
-    { key: 'bulk_reassign', label: 'Bulk Lead Reassignment' },
-    { key: 'advanced_bi', label: 'Advanced Business BI' },
-    { key: 'activity_audit_logs', label: 'Activity Audit Logs' },
-    { key: 'push_notifications', label: 'Push Notifications (FCM)' },
-    { key: 'android_app', label: 'Android Mobile App' },
-    { key: 'multi_branch', label: 'Multi-Branch Support' },
-    { key: 'priority_support', label: '24/7 Priority Support' },
-  ];
-
   return (
     <div className="nc-modal-scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="nc-modal" style={{ width: minMax(620, '94vw') }}>
+      <div className="nc-modal" style={{ width: 'min(440px, 94vw)' }}>
         <div style={{ padding: '20px 24px', borderBottom: '1px solid #E0E3E7', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#202124' }}>
-            Edit Plan: {plan.name}
-          </h3>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#202124' }}>
+              Edit Rate: {plan.name}
+            </h3>
+            <div style={{ fontSize: 12, color: '#5F6368', marginTop: 2 }}>
+              {plan.tier_subtitle} ({plan.duration_text})
+            </div>
+          </div>
           <button className="nc-btn" onClick={onClose} style={{ border: 0, padding: 6 }}>
             {Icons.cross}
           </button>
         </div>
 
         <form onSubmit={handleSubmit} style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-            <div>
-              <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#5F6368', marginBottom: 6 }}>Plan Name</label>
-              <input
-                type="text"
-                required
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #DADCE0', fontSize: 14 }}
-              />
-            </div>
-            <div>
-              <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#5F6368', marginBottom: 6 }}>Price in INR (₹)</label>
-              <input
-                type="number"
-                required
-                value={price}
-                onChange={(e) => setPrice(e.target.value)}
-                style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #DADCE0', fontSize: 14, fontWeight: 700, color: '#1E8E3E' }}
-              />
-            </div>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-            <div>
-              <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#5F6368', marginBottom: 6 }}>Billing Duration Text</label>
-              <input
-                type="text"
-                value={durationText}
-                onChange={(e) => setDurationText(e.target.value)}
-                placeholder="/month"
-                style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #DADCE0', fontSize: 14 }}
-              />
-            </div>
-            <div>
-              <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#5F6368', marginBottom: 6 }}>Tier Subtitle</label>
-              <input
-                type="text"
-                value={tierSubtitle}
-                onChange={(e) => setTierSubtitle(e.target.value)}
-                style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #DADCE0', fontSize: 14 }}
-              />
-            </div>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-            <div>
-              <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#5F6368', marginBottom: 6 }}>User Quota</label>
-              <input
-                type="text"
-                value={userLimit}
-                onChange={(e) => setUserLimit(e.target.value)}
-                placeholder="5 Users"
-                style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #DADCE0', fontSize: 14 }}
-              />
-            </div>
-            <div>
-              <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#5F6368', marginBottom: 6 }}>Leads Quota</label>
-              <input
-                type="text"
-                value={leadsLimit}
-                onChange={(e) => setLeadsLimit(e.target.value)}
-                placeholder="500 Leads/mo"
-                style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #DADCE0', fontSize: 14 }}
-              />
-            </div>
-          </div>
-
-          {/* Feature Checklist */}
           <div>
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#5F6368', marginBottom: 10 }}>Included Features &amp; Modules</label>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, background: '#F8F9FA', padding: 14, borderRadius: 10, border: '1px solid #E0E3E7' }}>
-              {featureLabels.map((f) => (
-                <label key={f.key} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={Boolean(features[f.key])}
-                    onChange={() => toggleFeature(f.key)}
-                  />
-                  <span>{f.label}</span>
-                </label>
-              ))}
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#5F6368', marginBottom: 6 }}>
+              Subscription Rate in INR (₹)
+            </label>
+            <input
+              type="number"
+              required
+              autoFocus
+              value={price}
+              onChange={(e) => setPrice(e.target.value)}
+              style={{
+                width: '100%', padding: '12px 14px', borderRadius: 8,
+                border: '1px solid #DADCE0', fontSize: 20, fontWeight: 800,
+                color: '#1E8E3E', outline: 'none'
+              }}
+            />
+            <div style={{ fontSize: 12, color: '#5F6368', marginTop: 6 }}>
+              Billed cycle: <b>{plan.duration_text}</b> &bull; Quotas: {plan.user_limit}, {plan.leads_limit}
             </div>
           </div>
 
-          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 12 }}>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 8 }}>
             <button type="button" className="nc-btn" onClick={onClose}>
               Cancel
             </button>
             <button type="submit" className="nc-btn nc-btn-primary" disabled={saving}>
-              {saving ? 'Saving Changes...' : 'Save Plan & Pricing'}
+              {saving ? 'Updating...' : 'Save Plan Rate'}
             </button>
           </div>
         </form>
