@@ -35,6 +35,15 @@ export const config = {
     apiKey: process.env.GEMINI_API_KEY || '',
     model: process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite',
   },
+  baseDomain: process.env.BASE_DOMAIN || 'nivaas.space',
+  smtp: {
+    host: process.env.SMTP_HOST || '',
+    port: Number(process.env.SMTP_PORT || 587),
+    secure: process.env.SMTP_SECURE === 'true',
+    user: process.env.SMTP_USER || '',
+    pass: process.env.SMTP_PASS || '',
+    from: process.env.SMTP_FROM || 'Nivaas OS <no-reply@nivaas.space>',
+  },
   meta: {
     appSecret,
     graph: `https://graph.facebook.com/${process.env.META_GRAPH_VERSION || 'v21.0'}`,

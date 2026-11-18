@@ -53,3 +53,4 @@ CREATE TABLE IF NOT EXISTS subscription_payments (
 CREATE INDEX IF NOT EXISTS idx_tenants_slug ON tenants(slug);
 CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(subscription_status);
 CREATE INDEX IF NOT EXISTS idx_payments_status ON subscription_payments(status);
+

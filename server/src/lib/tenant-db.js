@@ -161,3 +161,4 @@ export const masterDb = {
   one: async (text, params) => (await masterPool.query(text, params)).rows[0] || null,
   many: async (text, params) => (await masterPool.query(text, params)).rows,
 };
+

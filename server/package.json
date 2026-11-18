@@ -10,12 +10,14 @@
     "db:init": "node db/init.js",
     "db:init:master": "node db/master-init.js",
     "db:seed": "node db/seed.js",
-    "test": "node --test test/unit/core.test.js test/unit/config.test.js test/unit/tenant-db.test.js",
+    "test": "node --test test/unit/core.test.js test/unit/config.test.js test/unit/tenant-db.test.js test/unit/provisioner.test.js",
     "test:integration": "node test/run-integration.js",
     "check:syntax": "node test/check-syntax.js",
     "verify": "npm --prefix ../client run build && npm run check:syntax && npm test && npm run test:integration"
   },
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
@@ -23,6 +25,7 @@
     "express": "^4.21.1",
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.1",
+    "nodemailer": "^10.6.0",
     "pg": "^8.13.1"
   }
 }
