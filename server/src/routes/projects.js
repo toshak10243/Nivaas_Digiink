@@ -37,13 +37,22 @@ const diskStorage = multer.diskStorage({
   destination: (req, _f, cb) => { const d = path.join(config.uploadDir, req.user.org); fs.mkdirSync(d, { recursive: true }); cb(null, d); },
   filename: (_req, f, cb) => cb(null, crypto.randomUUID() + (MIME_EXT[f.mimetype] || '.bin')),
 });
+const privateDiskStorage = multer.diskStorage({
+  destination: (req, _f, cb) => { const d = path.join(config.uploadDir, 'private', req.user.org); fs.mkdirSync(d, { recursive: true }); cb(null, d); },
+  filename: (_req, f, cb) => cb(null, crypto.randomUUID() + (MIME_EXT[f.mimetype] || '.bin')),
+});
 export const upload = multer({
   storage: diskStorage,
   limits: { fileSize: config.maxUploadMb * 1024 * 1024 },
   fileFilter: (_req, f, cb) => cb(ALLOWED.test(f.mimetype) ? null : Object.assign(new Error('Only photos, videos and PDFs are allowed'), { status: 400 }), ALLOWED.test(f.mimetype)),
 });
+export const privateUpload = multer({
+  storage: privateDiskStorage,
+  limits: { fileSize: config.maxUploadMb * 1024 * 1024 },
+  fileFilter: (_req, f, cb) => cb(ALLOWED.test(f.mimetype) ? null : Object.assign(new Error('Only photos, videos and PDFs are allowed'), { status: 400 }), ALLOWED.test(f.mimetype)),
+});
 export const avatarUpload = multer({
-  storage: diskStorage,
+  storage: privateDiskStorage,
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_req, f, cb) => {
     const allowed = ['image/jpeg', 'image/png', 'image/webp'].includes(f.mimetype);
@@ -70,12 +79,27 @@ export async function verifyUploadedFiles(req, _res, next) {
 }
 
 export const fileUrl = (req, f) => `/uploads/${req.user.org}/${f.filename}`;
+export const privateFileKey = (req, f) => `private/${req.user.org}/${f.filename}`;
 
 function validateYoutubeUrl(value) {
   const raw = text(value, 'YouTube URL', { optional: false, max: 2048 });
   let url;
   try { url = new URL(raw); } catch { throw fail(400, 'Enter a valid YouTube URL'); }
-  if (!['http:', 'https:'].includes(url.protocol) || !['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be', 'www.youtu.be'].includes(url.hostname.toLowerCase())) throw fail(400, 'Enter a valid YouTube URL');
+  if (url.protocol !== 'https:' || url.username || url.password || !['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be', 'www.youtu.be'].includes(url.hostname.toLowerCase())) throw fail(400, 'Enter a valid YouTube HTTPS URL');
+  return url.toString();
+}
+
+function validateMediaUrl(value, label, { allowHttp = false } = {}) {
+  const raw = text(value, label, { optional: false, max: 2048 });
+  if (/^\/uploads\//i.test(raw)) {
+    const parts = raw.slice(1).split('/');
+    if (parts[1]?.toLowerCase() === 'private' || parts.some(part => !part || part === '.' || part === '..' || !/^[a-z0-9_.-]+$/i.test(part))) throw fail(400, `${label} must be a valid upload path or HTTPS URL`);
+    return raw;
+  }
+  let url;
+  try { url = new URL(raw); } catch { throw fail(400, `${label} must be a valid upload path or HTTPS URL`); }
+  const protocols = allowHttp ? ['https:', 'http:'] : ['https:'];
+  if (!protocols.includes(url.protocol) || !url.hostname || url.username || url.password) throw fail(400, `${label} must be a valid ${allowHttp ? 'HTTP or HTTPS' : 'HTTPS'} URL`);
   return url.toString();
 }
 
@@ -150,6 +174,8 @@ r.put('/projects/:id', allow('admin'), h(async (req, res) => {
   for (const [key, max] of Object.entries({ tagline: 160, description: 5000, location: 240, city: 120, map_url: 2048, rera_no: 120, possession: 120, cover_url: 2048, brochure_url: 2048 })) {
     if (b[key] !== undefined) b[key] = b[key] === null ? null : text(b[key], key.replaceAll('_', ' '), { max });
   }
+  for (const key of ['cover_url', 'brochure_url']) if (b[key] !== undefined && b[key] !== null) b[key] = b[key] === '' ? null : validateMediaUrl(b[key], key.replaceAll('_', ' '));
+  if (b.map_url !== undefined && b.map_url !== null) b.map_url = b.map_url === '' ? null : validateMediaUrl(b.map_url, 'Map URL', { allowHttp: true });
   if (b.charges !== undefined) b.charges = projectCharges(b.charges);
   if (b.payment_plan !== undefined) b.payment_plan = validatePaymentPlan(b.payment_plan);
   for (const key of ['amenities', 'highlights']) if (b[key] !== undefined) {
@@ -185,10 +211,11 @@ r.post('/projects/:id/unit-types', allow('admin'), h(async (req, res) => {
   const areas = unitAreas(t);
   const bathrooms = number(t.bathrooms ?? 2, 'Bathrooms', { min: 0, max: 20, integer: true, optional: false });
   const balconies = number(t.balconies ?? 1, 'Balconies', { min: 0, max: 20, integer: true, optional: false });
-  const floorplan = t.floorplan_url ? text(t.floorplan_url, 'Floor plan URL', { optional: false, max: 2048 }) : null;
+  const floorplan = t.floorplan_url ? validateMediaUrl(t.floorplan_url, 'Floor plan URL') : null;
   const row = await one(`INSERT INTO unit_types (project_id, name, bhk, carpet_sqft, builtup_sqft, super_sqft, bathrooms, balconies, floorplan_url)
                          SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9 FROM projects WHERE id = $1 AND org_id = $10 RETURNING *`,
     [req.params.id, typeName, bhk, areas.carpet_sqft, areas.builtup_sqft, areas.super_sqft, bathrooms, balconies, floorplan, req.user.org]);
+  if (!row) throw fail(404, 'Project not found');
   res.json(row);
 }));
 r.put('/unit-types/:id', allow('admin'), h(async (req, res) => {
@@ -206,7 +233,7 @@ r.put('/unit-types/:id', allow('admin'), h(async (req, res) => {
   }
   if (t.bathrooms !== undefined) t.bathrooms = number(t.bathrooms, 'Bathrooms', { min: 0, max: 20, integer: true, optional: false });
   if (t.balconies !== undefined) t.balconies = number(t.balconies, 'Balconies', { min: 0, max: 20, integer: true, optional: false });
-  if (t.floorplan_url !== undefined && t.floorplan_url !== null) t.floorplan_url = text(t.floorplan_url, 'Floor plan URL', { max: 2048 });
+  if (t.floorplan_url !== undefined && t.floorplan_url !== null) t.floorplan_url = validateMediaUrl(t.floorplan_url, 'Floor plan URL');
   res.json(await one(`UPDATE unit_types t SET name = COALESCE($2,name), bhk = COALESCE($3,bhk), carpet_sqft = COALESCE($4,carpet_sqft), builtup_sqft = COALESCE($5,builtup_sqft),
                         super_sqft = COALESCE($6,super_sqft), bathrooms = COALESCE($7,bathrooms), balconies = COALESCE($8,balconies), floorplan_url = COALESCE($9,floorplan_url)
                       FROM projects p WHERE t.id = $1 AND p.id = t.project_id AND p.org_id = $10 RETURNING t.*`,
@@ -216,7 +243,10 @@ r.put('/unit-types/:id', allow('admin'), h(async (req, res) => {
 /** Create a tower and all its units at once: floors × units per floor, each column mapped to a unit type. */
 r.post('/projects/:id/towers', allow('admin'), h(async (req, res) => {
   uuid(req.params.id, 'Project ID');
-  const { name, floors, per_floor, types = [], facing = [], plc = [], start_floor = 1, format = '{floor}{n}-{tower}' } = req.body || {};
+  const body = req.body || {};
+  const allowed = ['name', 'floors', 'per_floor', 'types', 'facing', 'plc', 'start_floor', 'format'];
+  if (Object.keys(body).some(key => !allowed.includes(key))) throw fail(400, 'Unsupported tower field');
+  const { name, floors, per_floor, types = [], facing = [], plc = [], start_floor = 1, format = '{floor}{n}-{tower}' } = body;
   if (typeof name !== 'string' || !name.trim() || name.length > 80) throw fail(400, 'Tower name must be 1 to 80 characters');
   const floorCount = number(floors, 'Floors', { min: 1, max: 100, integer: true, optional: false });
   const unitsPerFloor = number(per_floor, 'Units per floor', { min: 1, max: 40, integer: true, optional: false });
@@ -280,7 +310,7 @@ r.patch('/units/:id', h(async (req, res) => {
   if (!u) throw fail(404, 'Unit not found');
   const { action, plc_pct, price_override, facing, notes, unit_type_id } = req.body || {};
   if (Object.keys(req.body || {}).some(key => !['action', 'plc_pct', 'price_override', 'facing', 'notes', 'unit_type_id'].includes(key))) throw fail(400, 'Unsupported inventory field');
-  if (unit_type_id) uuid(unit_type_id, 'Unit type ID');
+  if (unit_type_id !== undefined && unit_type_id !== null) uuid(unit_type_id, 'Unit type ID');
   if (action !== undefined) oneOf(action, 'Inventory action', ['hold', 'release', 'block', 'unblock'], { optional: false });
   if (plc_pct !== undefined) number(plc_pct, 'PLC percentage', { min: 0, max: 100, optional: false });
   if (price_override !== undefined && price_override !== '') number(price_override, 'Price override', { min: 0, max: 1_000_000_000, optional: false });
@@ -385,8 +415,8 @@ r.post('/projects/:id/updates', allow('admin', 'sales'), h(async (req, res) => {
   let urls;
   if (media_urls !== undefined) {
     if (!Array.isArray(media_urls) || media_urls.length > 20) throw fail(400, 'Media URLs must be a list of at most 20 items');
-    urls = media_urls.map((url, i) => text(url, `Media URL ${i + 1}`, { optional: false, max: 2048 }));
-  } else urls = media_url ? [text(media_url, 'Media URL', { optional: false, max: 2048 })] : [];
+    urls = media_urls.map((url, i) => validateMediaUrl(url, `Media URL ${i + 1}`));
+  } else urls = media_url ? [validateMediaUrl(media_url, 'Media URL')] : [];
   if (tower_id && !(await one(`SELECT id FROM towers WHERE id = $1 AND project_id = $2`, [tower_id, req.params.id]))) throw fail(400, 'Tower must belong to this project');
   const u = await one(`INSERT INTO project_updates (project_id, title, body, media_url, tower_id, stage_name, progress_pct, media_urls)
     SELECT $1, $2, $3, $4, $5, $6, $7, $8

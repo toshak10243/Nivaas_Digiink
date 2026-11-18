@@ -7,6 +7,7 @@ import { config } from '../config.js';
 async function graph(path, token, body) {
   const res = await fetch(config.meta.graph + path, {
     method: 'POST',
+    signal: AbortSignal.timeout(20000),
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify(body),
   });
@@ -39,13 +40,15 @@ export async function sendImage(num, to, url, caption = '') {
     const root = path.resolve(config.uploadDir) + path.sep;
     if (!filename.startsWith(root)) throw new Error('Invalid photo path.');
     const bytes = await fs.readFile(filename);
-    const mime = filename.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+    const extension = path.extname(filename).toLowerCase();
+    const mime = extension === '.png' ? 'image/png' : ['.jpg', '.jpeg'].includes(extension) ? 'image/jpeg' : null;
+    if (!mime) throw new Error('WhatsApp photos must be JPG or PNG. Convert this file before sending.');
     const form = new FormData();
     form.append('messaging_product', 'whatsapp');
     form.append('type', mime);
     form.append('file', new Blob([bytes], { type: mime }), path.basename(filename));
     const res = await fetch(`${config.meta.graph}/${num.phone_number_id}/media`, {
-      method: 'POST', headers: { Authorization: `Bearer ${num.access_token}` }, body: form,
+      method: 'POST', signal: AbortSignal.timeout(20000), headers: { Authorization: `Bearer ${num.access_token}` }, body: form,
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.error || !data.id) throw new Error(data?.error?.message || `WhatsApp media upload ${res.status}`);
@@ -53,6 +56,35 @@ export async function sendImage(num, to, url, caption = '') {
   }
   return graph(`/${num.phone_number_id}/messages`, num.access_token, {
     messaging_product: 'whatsapp', to, type: 'image', image: { ...image, ...(caption ? { caption } : {}) },
+  });
+}
+
+/** Send a video using an HTTPS source link or upload a CRM MP4 to WhatsApp first. */
+export async function sendVideo(num, to, url, caption = '') {
+  let video = {};
+  if (/^https:\/\//i.test(url)) {
+    video.link = url;
+  } else {
+    const match = String(url || '').match(/^\/?uploads\/(.+)$/i);
+    if (!match) throw new Error('Video URL must be an HTTPS link or a CRM upload.');
+    const filename = path.resolve(config.uploadDir, match[1]);
+    const root = path.resolve(config.uploadDir) + path.sep;
+    if (!filename.startsWith(root)) throw new Error('Invalid video path.');
+    if (path.extname(filename).toLowerCase() !== '.mp4') throw new Error('WhatsApp videos must be MP4 files.');
+    const bytes = await fs.readFile(filename);
+    const form = new FormData();
+    form.append('messaging_product', 'whatsapp');
+    form.append('type', 'video/mp4');
+    form.append('file', new Blob([bytes], { type: 'video/mp4' }), path.basename(filename));
+    const res = await fetch(`${config.meta.graph}/${num.phone_number_id}/media`, {
+      method: 'POST', signal: AbortSignal.timeout(30000), headers: { Authorization: `Bearer ${num.access_token}` }, body: form,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error || !data.id) throw new Error(data?.error?.message || `WhatsApp video upload ${res.status}`);
+    video.id = data.id;
+  }
+  return graph(`/${num.phone_number_id}/messages`, num.access_token, {
+    messaging_product: 'whatsapp', to, type: 'video', video: { ...video, ...(caption ? { caption } : {}) },
   });
 }
 
