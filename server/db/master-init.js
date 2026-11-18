@@ -49,26 +49,6 @@ export async function initMasterDb() {
     await masterClient.query(schemaSql);
     console.log('[master-db] Master schema tables verified & applied.');
 
-    // 3. Seed default tenant (existing Shree Ganesh Developers mapped to current 'nivaas' database)
-    const existingTenant = await masterClient.query(`SELECT id FROM tenants WHERE slug = 'sgdevelopers'`);
-    if (existingTenant.rows.length === 0) {
-      await masterClient.query(
-        `INSERT INTO tenants (name, slug, db_name, admin_email, admin_name, phone, plan_type, subscription_status, trial_ends_at, subscription_ends_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now() + interval '365 days', now() + interval '365 days')`,
-        [
-          'Shree Ganesh Developers',
-          'sgdevelopers',
-          'nivaas', // Map directly to existing 'nivaas' database
-          'admin@sgdevelopers.in',
-          'Vikram Khandelwal',
-          '9829012345',
-          'yearly',
-          'active',
-        ]
-      );
-      console.log('[master-db] Seeded initial tenant: Shree Ganesh Developers (slug: sgdevelopers, db: nivaas).');
-    }
-
     // 4. Seed default Super Admin for admin.nivaas.space
     const existingAdmin = await masterClient.query(`SELECT id FROM super_admins WHERE email = 'admin@nivaas.space'`);
     if (existingAdmin.rows.length === 0) {

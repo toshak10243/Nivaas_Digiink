@@ -220,6 +220,39 @@ r.patch('/tenants/:id', requireSuperAdmin, h(async (req, res) => {
 }));
 
 /**
+ * DELETE /api/superadmin/tenants/:id
+ * Deprovisions a tenant and removes its isolated physical database
+ */
+r.delete('/tenants/:id', requireSuperAdmin, h(async (req, res) => {
+  const { id } = req.params;
+  const tenant = await masterDb.one(`SELECT * FROM tenants WHERE id = $1`, [id]);
+  if (!tenant) throw fail(404, 'Tenant not found');
+
+  await masterDb.query(`DELETE FROM tenants WHERE id = $1`, [id]);
+  clearTenantCache(tenant.slug);
+
+  // Safely drop isolated database if it was an auto-provisioned tenant DB
+  if (tenant.db_name && tenant.db_name.startsWith('nivaas_') && tenant.db_name !== 'nivaas_master' && tenant.db_name !== 'nivaas') {
+    try {
+      const pg = await import('pg');
+      const rootConnStr = config.databaseUrl.replace(/\/[^/?]+(\?.*)?$/, '/postgres$1');
+      const rootClient = new pg.default.Client({ connectionString: rootConnStr });
+      await rootClient.connect();
+      await rootClient.query(
+        `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`,
+        [tenant.db_name]
+      );
+      await rootClient.query(`DROP DATABASE IF EXISTS ${tenant.db_name}`);
+      await rootClient.end().catch(() => {});
+    } catch (dropErr) {
+      console.warn(`[superadmin] Could not drop database "${tenant.db_name}":`, dropErr.message);
+    }
+  }
+
+  res.json({ ok: true, message: `Tenant "${tenant.name}" deleted successfully.` });
+}));
+
+/**
  * GET /api/superadmin/tenants/:id
  * Detailed profile of a single tenant including its isolated DB status and audit payments
  */

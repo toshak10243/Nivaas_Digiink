@@ -213,6 +213,7 @@ const saApi = {
   getTenant: (id) => saApi.request(`/api/superadmin/tenants/${id}`),
   createTenant: (body) => saApi.request('/api/superadmin/tenants', { method: 'POST', body }),
   updateTenant: (id, body) => saApi.request(`/api/superadmin/tenants/${id}`, { method: 'PATCH', body }),
+  deleteTenant: (id) => saApi.request(`/api/superadmin/tenants/${id}`, { method: 'DELETE' }),
   resetPassword: (id) => saApi.request(`/api/superadmin/tenants/${id}/reset-password`, { method: 'POST' }),
   renewTenant: (id, body) => saApi.request(`/api/superadmin/tenants/${id}/renew`, { method: 'POST', body }),
   getPayments: (status) => saApi.request(`/api/superadmin/payments${status ? `?status=${status}` : ''}`),
@@ -826,14 +827,14 @@ export default function SuperAdminPortal() {
 
                                     <button
                                       onClick={() => {
-                                        if (confirm(`Are you sure you want to suspend/unsuspend ${t.name}?`)) {
-                                          const next = t.subscription_status === 'suspended' ? 'active' : 'suspended';
-                                          saApi.updateTenant(t.id, { status: next })
-                                            .then(() => { say(`Tenant status set to ${next}`); loadAll(); });
+                                        if (confirm(`Are you sure you want to permanently delete tenant "${t.name}" and its isolated database?`)) {
+                                          saApi.deleteTenant(t.id)
+                                            .then(() => { say(`Tenant "${t.name}" deleted successfully.`); loadAll(); })
+                                            .catch((e) => say(e.message));
                                         }
                                       }}
                                       style={{ background: 'transparent', border: 0, cursor: 'pointer', padding: 4 }}
-                                      title="Suspend / Toggle Tenant"
+                                      title="Delete Tenant"
                                     >
                                       {Icons.trash}
                                     </button>
