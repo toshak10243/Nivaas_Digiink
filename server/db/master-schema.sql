@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS tenants (
   admin_email         text NOT NULL,              -- primary builder owner email
   admin_name          text NOT NULL,              -- primary builder owner name
   phone               text,
-  plan_type           text NOT NULL DEFAULT 'trial' CHECK (plan_type IN ('trial', 'monthly', 'half_yearly', 'yearly', 'lifetime')),
+  plan_type           text NOT NULL DEFAULT 'trial' CHECK (plan_type IN ('trial', 'monthly', 'half_yearly', 'yearly', 'lifetime', 'starter', 'professional', 'business', 'enterprise')),
   subscription_status text NOT NULL DEFAULT 'active' CHECK (subscription_status IN ('active', 'expired', 'pending_verification', 'suspended')),
   trial_ends_at       timestamptz NOT NULL DEFAULT (now() + interval '7 days'),
   subscription_ends_at timestamptz NOT NULL DEFAULT (now() + interval '7 days'),
@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS super_admins (
 CREATE TABLE IF NOT EXISTS subscription_payments (
   id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id         uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  plan_type         text NOT NULL CHECK (plan_type IN ('monthly', 'half_yearly', 'yearly', 'lifetime')),
+  plan_type         text NOT NULL CHECK (plan_type IN ('trial', 'monthly', 'half_yearly', 'yearly', 'lifetime', 'starter', 'professional', 'business', 'enterprise')),
   amount            numeric(12, 2) NOT NULL,
   duration_days     int NOT NULL,
   payment_mode      text NOT NULL DEFAULT 'upi',   -- 'upi', 'neft', 'imps', 'card'
