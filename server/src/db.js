@@ -1,22 +1,17 @@
-import pg from 'pg';
-import { config } from './config.js';
+import { getActivePool, defaultPool, masterDb, runWithTenant, tenantStorage } from './lib/tenant-db.js';
 
-pg.types.setTypeParser(1700, v => (v === null ? null : Number(v))); // numeric → number
+// Export default pool for legacy references
+export const pool = defaultPool;
 
-export const pool = new pg.Pool({
-  connectionString: config.databaseUrl,
-  max: 15,
-  connectionTimeoutMillis: 5000,
-  idleTimeoutMillis: 30000,
-  statement_timeout: 10000,
-});
-export const q = (text, params) => pool.query(text, params);
-export const one = async (text, params) => (await pool.query(text, params)).rows[0] || null;
-export const many = async (text, params) => (await pool.query(text, params)).rows;
+// Dynamic queries routed to the active tenant's isolated database via AsyncLocalStorage
+export const q = (text, params) => getActivePool().query(text, params);
+export const one = async (text, params) => (await getActivePool().query(text, params)).rows[0] || null;
+export const many = async (text, params) => (await getActivePool().query(text, params)).rows;
 
-/** Run several statements atomically. */
+/** Run several statements atomically on the active tenant's database. */
 export async function tx(fn) {
-  const c = await pool.connect();
+  const activePool = getActivePool();
+  const c = await activePool.connect();
   try {
     await c.query('BEGIN');
     const helpers = {
@@ -34,3 +29,5 @@ export async function tx(fn) {
     c.release();
   }
 }
+
+export { masterDb, runWithTenant, tenantStorage };
