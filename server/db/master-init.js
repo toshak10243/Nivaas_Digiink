@@ -81,6 +81,144 @@ export async function initMasterDb() {
       console.log('[master-db] Seeded initial Super Admin (admin@nivaas.space / Admin@123).');
     }
 
+    // 5. Seed default Indian SaaS Plans (Starter, Professional, Business, Enterprise)
+    const existingPlans = await masterClient.query(`SELECT COUNT(*)::int AS cnt FROM subscription_plans`);
+    if ((existingPlans.rows[0]?.cnt || 0) === 0) {
+      const plans = [
+        {
+          id: 'starter',
+          name: 'Starter Tier',
+          tier_subtitle: 'Monthly Recurring Subscription',
+          price: 4999,
+          duration_text: '/month',
+          duration_days: 30,
+          user_limit: '5 Users',
+          leads_limit: '500 Leads/mo',
+          popular: false,
+          features: {
+            manager_role: true,
+            quotation_invoice: true,
+            csv_import_export: true,
+            advanced_bi: false,
+            push_notifications: false,
+            multi_branch: false,
+            site_survey: false,
+            reports_analytics: false,
+            bulk_reassign: false,
+            activity_audit_logs: false,
+            android_app: false,
+            priority_support: false,
+          },
+        },
+        {
+          id: 'professional',
+          name: 'Professional Tier',
+          tier_subtitle: 'Half-Yearly Growth Commitment',
+          price: 24999,
+          duration_text: '/6 months',
+          duration_days: 180,
+          user_limit: '15 Users',
+          leads_limit: '2000 Leads/mo',
+          popular: false,
+          features: {
+            manager_role: true,
+            quotation_invoice: true,
+            csv_import_export: true,
+            advanced_bi: true,
+            push_notifications: true,
+            multi_branch: false,
+            site_survey: true,
+            reports_analytics: true,
+            bulk_reassign: false,
+            activity_audit_logs: true,
+            android_app: false,
+            priority_support: false,
+          },
+        },
+        {
+          id: 'business',
+          name: 'Business Tier',
+          tier_subtitle: 'Annual Enterprise Subscription',
+          price: 44999,
+          duration_text: '/year',
+          duration_days: 365,
+          user_limit: '50 Users',
+          leads_limit: '10000 Leads/mo',
+          popular: true,
+          features: {
+            manager_role: true,
+            quotation_invoice: true,
+            csv_import_export: true,
+            advanced_bi: true,
+            push_notifications: true,
+            multi_branch: true,
+            site_survey: true,
+            reports_analytics: true,
+            bulk_reassign: true,
+            activity_audit_logs: true,
+            android_app: true,
+            priority_support: true,
+          },
+        },
+        {
+          id: 'enterprise',
+          name: 'Enterprise Tier',
+          tier_subtitle: 'Founder Lifetime Access',
+          price: 99999,
+          duration_text: 'One-Time',
+          duration_days: 3650,
+          user_limit: 'Unlimited Users',
+          leads_limit: 'Unlimited Leads/mo',
+          popular: false,
+          features: {
+            manager_role: true,
+            quotation_invoice: true,
+            csv_import_export: true,
+            advanced_bi: true,
+            push_notifications: true,
+            multi_branch: true,
+            site_survey: true,
+            reports_analytics: true,
+            bulk_reassign: true,
+            activity_audit_logs: true,
+            android_app: true,
+            priority_support: true,
+          },
+        },
+      ];
+
+      for (const p of plans) {
+        await masterClient.query(
+          `INSERT INTO subscription_plans (id, name, tier_subtitle, price, duration_text, duration_days, user_limit, leads_limit, popular, features)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           ON CONFLICT (id) DO NOTHING`,
+          [p.id, p.name, p.tier_subtitle, p.price, p.duration_text, p.duration_days, p.user_limit, p.leads_limit, p.popular, JSON.stringify(p.features)]
+        );
+      }
+      console.log('[master-db] Seeded initial 4 subscription plans.');
+    }
+
+    // 6. Seed default Platform Settings (UPI VPA, Bank Details)
+    const existingSettings = await masterClient.query(`SELECT 1 FROM platform_settings WHERE key = 'bank_upi'`);
+    if (existingSettings.rows.length === 0) {
+      await masterClient.query(
+        `INSERT INTO platform_settings (key, value) VALUES ($1, $2)`,
+        [
+          'bank_upi',
+          JSON.stringify({
+            upi_id: 'nivaas@icici',
+            bank_name: 'ICICI Bank Ltd',
+            account_name: 'Nivaas Real Estate Technologies Pvt Ltd',
+            account_number: '50200088991122',
+            ifsc_code: 'ICIC0001234',
+            support_phone: '+91 98290 12345',
+            support_email: 'support@nivaas.space',
+          })
+        ]
+      );
+      console.log('[master-db] Seeded initial platform settings.');
+    }
+
     console.log('[master-db] Master DB initialization complete.');
   } finally {
     await masterClient.end().catch(() => {});

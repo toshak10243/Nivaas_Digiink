@@ -336,4 +336,68 @@ r.post('/payments/:id/reject', requireSuperAdmin, h(async (req, res) => {
   res.json({ ok: true, message: 'Payment marked as rejected' });
 }));
 
+/**
+ * GET /api/superadmin/plans
+ * Lists all customizable subscription plans from nivaas_master
+ */
+r.get('/plans', requireSuperAdmin, h(async (req, res) => {
+  const plans = await masterDb.many(`SELECT * FROM subscription_plans ORDER BY price ASC`);
+  res.json({ ok: true, plans });
+}));
+
+/**
+ * PUT /api/superadmin/plans/:id
+ * Updates pricing, features, and quotas for a plan
+ */
+r.put('/plans/:id', requireSuperAdmin, h(async (req, res) => {
+  const { id } = req.params;
+  const { name, tier_subtitle, price, duration_text, user_limit, leads_limit, features } = req.body || {};
+
+  const existing = await masterDb.one(`SELECT id FROM subscription_plans WHERE id = $1`, [id]);
+  if (!existing) throw fail(404, 'Plan not found');
+
+  const updated = await masterDb.one(
+    `UPDATE subscription_plans
+     SET 
+       name = COALESCE($1, name),
+       tier_subtitle = COALESCE($2, tier_subtitle),
+       price = COALESCE($3, price),
+       duration_text = COALESCE($4, duration_text),
+       user_limit = COALESCE($5, user_limit),
+       leads_limit = COALESCE($6, leads_limit),
+       features = COALESCE($7, features),
+       updated_at = NOW()
+     WHERE id = $8
+     RETURNING *`,
+    [name, tier_subtitle, price ? Number(price) : null, duration_text, user_limit, leads_limit, features ? JSON.stringify(features) : null, id]
+  );
+
+  res.json({ ok: true, plan: updated });
+}));
+
+/**
+ * GET /api/superadmin/settings
+ * Retrieves master platform settings
+ */
+r.get('/settings', requireSuperAdmin, h(async (req, res) => {
+  const row = await masterDb.one(`SELECT value FROM platform_settings WHERE key = 'bank_upi'`);
+  res.json({ ok: true, settings: row?.value || {} });
+}));
+
+/**
+ * PUT /api/superadmin/settings
+ * Updates master platform settings (UPI ID, bank account, support contact)
+ */
+r.put('/settings', requireSuperAdmin, h(async (req, res) => {
+  const settings = req.body || {};
+  await masterDb.q(
+    `INSERT INTO platform_settings (key, value, updated_at)
+     VALUES ('bank_upi', $1, NOW())
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+    [JSON.stringify(settings)]
+  );
+  res.json({ ok: true, settings });
+}));
+
 export default r;
+

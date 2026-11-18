@@ -54,3 +54,27 @@ CREATE INDEX IF NOT EXISTS idx_tenants_slug ON tenants(slug);
 CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(subscription_status);
 CREATE INDEX IF NOT EXISTS idx_payments_status ON subscription_payments(status);
 
+-- Subscription Tiers (Editable from Super Admin Console)
+CREATE TABLE IF NOT EXISTS subscription_plans (
+  id            text PRIMARY KEY,
+  name          text NOT NULL,
+  tier_subtitle text NOT NULL DEFAULT 'Monthly Recurring Subscription',
+  price         numeric(10, 2) NOT NULL,
+  duration_text text NOT NULL DEFAULT '/month',
+  duration_days int NOT NULL DEFAULT 30,
+  user_limit    text NOT NULL DEFAULT '5 Users',
+  leads_limit   text NOT NULL DEFAULT '500 Leads/mo',
+  popular       boolean NOT NULL DEFAULT false,
+  features      jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now()
+);
+
+-- Master Platform Settings (UPI VPA, Bank Details, Support)
+CREATE TABLE IF NOT EXISTS platform_settings (
+  key         text PRIMARY KEY,
+  value       jsonb NOT NULL,
+  updated_at  timestamptz NOT NULL DEFAULT now()
+);
+
+

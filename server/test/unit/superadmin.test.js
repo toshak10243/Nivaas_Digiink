@@ -48,3 +48,4 @@ test('requireSuperAdmin middleware passes for valid super_admin token', () => {
   assert.equal(req.superAdmin.id, 99);
   assert.equal(req.superAdmin.email, 'admin@nivaas.space');
 });
+
