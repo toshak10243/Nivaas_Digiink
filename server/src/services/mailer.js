@@ -57,6 +57,19 @@ export async function sendTenantWelcomeEmail({ email, name, subdomain, tempPassw
     day: 'numeric', month: 'short', year: 'numeric'
   }) : '7 Days';
 
+  const planLabels = {
+    starter: 'Starter Tier (Monthly Subscription)',
+    professional: 'Professional Tier (6 Months Subscription)',
+    business: 'Business Tier (Annual Enterprise)',
+    enterprise: 'Enterprise Tier (Lifetime Access)',
+    trial: '7-Day Free Trial Activated',
+    monthly: 'Starter Tier (Monthly)',
+    yearly: 'Business Tier (Annual)',
+    lifetime: 'Enterprise Tier (Lifetime Access)',
+  };
+  const planBadge = planLabels[planType] || `${String(planType).toUpperCase()} Plan`;
+  const isLifetime = planType === 'enterprise' || planType === 'lifetime';
+
   const subject = `Welcome to Nivaas — Your Real Estate AI CRM & Copilot is ready! (${subdomain}.${config.baseDomain})`;
 
   const html = `
@@ -83,7 +96,7 @@ export async function sendTenantWelcomeEmail({ email, name, subdomain, tempPassw
     <body>
       <div class="card">
         <div class="brand">NIVAAS <span style="font-weight: 400; color: #94a3b8; font-size: 15px;">· Real Estate OS</span></div>
-        <span class="badge">7-Day Free Trial Activated</span>
+        <span class="badge">${planBadge}</span>
         <h1>Namaste ${name}!</h1>
         <p>Your private, dedicated Real Estate CRM instance has been successfully created and configured with an isolated database for <b>${name}</b>.</p>
         
@@ -101,8 +114,8 @@ export async function sendTenantWelcomeEmail({ email, name, subdomain, tempPassw
             <span class="cred-val" style="color: #38bdf8;">${tempPassword}</span>
           </div>
           <div class="cred-row">
-            <span class="cred-label">Trial Valid Until:</span>
-            <span class="cred-val" style="color: #10b981;">${expiryFormatted}</span>
+            <span class="cred-label">${planType === 'trial' ? 'Trial Valid Until:' : 'Subscription Period:'}</span>
+            <span class="cred-val" style="color: #10b981;">${isLifetime ? 'Lifetime Access' : expiryFormatted}</span>
           </div>
         </div>
 

@@ -1,5 +1,9 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 const production = process.env.NODE_ENV === 'production';
 const jwtSecret = process.env.JWT_SECRET || 'dev-secret-change-me';
@@ -37,12 +41,12 @@ export const config = {
   },
   baseDomain: process.env.BASE_DOMAIN || 'nivaas.space',
   smtp: {
-    host: process.env.SMTP_HOST || '',
-    port: Number(process.env.SMTP_PORT || 587),
+    host: process.env.SMTP_HOST || process.env.MAIL_HOST || '',
+    port: Number(process.env.SMTP_PORT || process.env.MAIL_PORT || 587),
     secure: process.env.SMTP_SECURE === 'true',
-    user: process.env.SMTP_USER || '',
-    pass: process.env.SMTP_PASS || '',
-    from: process.env.SMTP_FROM || 'Nivaas OS <no-reply@nivaas.space>',
+    user: process.env.SMTP_USER || process.env.MAIL_USER || '',
+    pass: process.env.SMTP_PASS || process.env.SMTP_PASSWORD || process.env.MAIL_PASS || '',
+    from: process.env.SMTP_FROM || process.env.MAIL_FROM || 'Nivaas Real Estate OS <hostingdigiink@gmail.com>',
   },
   meta: {
     appSecret,
