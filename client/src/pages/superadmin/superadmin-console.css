@@ -169,14 +169,14 @@
 
 /* Topbar */
 .nc-topbar {
-  height: 64px;
   min-height: 64px;
   background: #FFFFFF;
   border-bottom: 1px solid #E0E3E7;
-  padding: 0 32px;
+  padding: 10px 24px;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
   z-index: 40;
 }
 .nc-breadcrumb {
@@ -197,11 +197,14 @@
   color: #202124;
   margin: 0;
   line-height: 1.2;
+  white-space: nowrap;
 }
 
 .nc-top-search {
   position: relative;
-  width: 380px;
+  width: min(340px, 28vw);
+  max-width: 340px;
+  flex: 0 1 auto;
 }
 .nc-top-search input {
   width: 100%;
@@ -507,6 +510,7 @@
   padding: 12px 6px;
   border-bottom: 1px solid #F1F3F4;
   gap: 16px;
+  min-width: 0;
 }
 .nc-detail-row:last-child {
   border-bottom: none;
@@ -518,7 +522,9 @@
   color: #5F6368;
   font-size: 13.5px;
   font-weight: 500;
-  min-width: 180px;
+  min-width: 160px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .nc-detail-label svg {
   color: #80868B;
@@ -531,6 +537,60 @@
   font-size: 13.5px;
   font-weight: 600;
   text-align: right;
-  word-break: break-all;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
+
+/* Responsive Grid Utilities for Super Admin Console */
+.nc-charts-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 20px;
+}
+@media (max-width: 1024px) {
+  .nc-charts-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.nc-create-client-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 1fr);
+  gap: 24px;
+}
+@media (max-width: 1080px) {
+  .nc-create-client-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.nc-tenant-kpis-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+@media (max-width: 1200px) {
+  .nc-tenant-kpis-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 640px) {
+  .nc-tenant-kpis-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.nc-tenant-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) minmax(420px, 1.25fr);
+  gap: 24px;
+  align-items: start;
+}
+@media (max-width: 1140px) {
+  .nc-tenant-detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 

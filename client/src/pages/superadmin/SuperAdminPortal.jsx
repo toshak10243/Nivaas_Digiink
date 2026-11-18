@@ -592,7 +592,7 @@ export default function SuperAdminPortal() {
                 </div>
 
                 {/* 2 Graphs Row */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 20 }}>
+                <div className="nc-charts-grid">
                   {/* Revenue Trend Chart Card */}
                   <div className="nc-card">
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
@@ -1195,7 +1195,7 @@ function CreateClientPage({ onBack, onSuccess }) {
       )}
 
       {/* 2 Column Form */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 24 }}>
+      <div className="nc-create-client-grid">
         {/* Left Form */}
         <form onSubmit={handleSubmit} className="nc-card" style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
           {/* Section 1 */}
@@ -1766,7 +1766,7 @@ function ClientDetailPage({ tenantId, plans, onBack, say, onTenantUpdated }) {
       )}
 
       {/* 2. 4 Metric Cards Grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+      <div className="nc-tenant-kpis-grid">
         <div className="nc-kpi-card">
           <div className="nc-kpi-header">
             <span className="nc-kpi-label">ACTIVE PLAN TIER</span>
@@ -1825,13 +1825,13 @@ function ClientDetailPage({ tenantId, plans, onBack, say, onTenantUpdated }) {
       </div>
 
       {/* 3. 2-Column Main Section */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 1fr', gap: 24 }}>
+      <div className="nc-tenant-detail-grid">
         {/* Left Card: Organization & Technical Profile */}
-        <div className="nc-card" style={{ padding: 0, overflow: 'hidden' }}>
+        <div className="nc-card" style={{ padding: 0, overflow: 'hidden', minWidth: 0 }}>
           <div style={{ padding: '18px 24px', borderBottom: '1px solid #E0E3E7', display: 'flex', alignItems: 'center', gap: 10 }}>
             <div style={{ width: 4, height: 18, background: '#1A73E8', borderRadius: 2 }} />
             <span style={{ color: '#1A73E8', display: 'flex' }}>{Icons.building}</span>
-            <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: '#202124' }}>
+            <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: '#202124', whiteSpace: 'nowrap' }}>
               Tenant Organization Profile
             </h3>
           </div>
@@ -1893,18 +1893,18 @@ function ClientDetailPage({ tenantId, plans, onBack, say, onTenantUpdated }) {
         </div>
 
         {/* Right Card: Subscription Entitlements & History */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 24, minWidth: 0 }}>
           {/* Entitlements Card */}
           <div className="nc-card" style={{ padding: 24 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
               <div style={{ width: 4, height: 18, background: '#1E8E3E', borderRadius: 2 }} />
               <span style={{ color: '#1E8E3E', display: 'flex' }}>{Icons.plans}</span>
-              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: '#202124' }}>
+              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: '#202124', whiteSpace: 'nowrap' }}>
                 Included Features &amp; Entitlements
               </h3>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 14px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px 14px' }}>
               {[
                 'Manager Role Access',
                 'Site Survey Module',
