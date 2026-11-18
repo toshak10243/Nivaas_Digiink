@@ -5,10 +5,13 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { fileURLToPath } from 'node:url';
+import { exec } from 'node:child_process';
+import { promisify } from 'node:util';
 import { config } from '../config.js';
 import { masterDb } from '../lib/tenant-db.js';
 import { sendTenantWelcomeEmail } from './mailer.js';
 
+const execAsync = promisify(exec);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const RESERVED_SLUGS = new Set([
@@ -47,6 +50,35 @@ function getPostgresRootClient(targetDb = 'postgres') {
 export function generateTempPassword() {
   const rand = crypto.randomBytes(4).toString('hex');
   return `Nivaas@${rand}`;
+}
+
+export async function ensureTenantSsl(slug) {
+  if (process.env.NODE_ENV !== 'production') return;
+  try {
+    const domain = `${slug}.${config.baseDomain}`;
+    // Gather all active subdomains to include in the certbot expand command
+    const tenants = await masterDb.manyOrNone(`SELECT slug FROM tenants WHERE subscription_status != 'deleted'`);
+    const domainList = ['nivaas.space', 'admin.nivaas.space', 'apex.nivaas.space', 'www.nivaas.space'];
+    for (const t of tenants) {
+      if (t.slug && !domainList.includes(`${t.slug}.nivaas.space`)) {
+        domainList.push(`${t.slug}.nivaas.space`);
+      }
+    }
+    if (slug && !domainList.includes(domain)) {
+      domainList.push(domain);
+    }
+    const dArgs = domainList.map(d => `-d ${d}`).join(' ');
+    const cmd = `certbot certonly --webroot -w /var/www/nivaas/client/dist --cert-name nivaas.space --expand ${dArgs} --non-interactive --agree-tos --email admin@nivaas.space && systemctl reload nginx`;
+    
+    // Run asynchronously without blocking response
+    execAsync(cmd).then(() => {
+      console.log(`[ssl-provisioner] Successfully expanded SSL certificate for ${domain}`);
+    }).catch(err => {
+      console.warn(`[ssl-provisioner] SSL expand warning for ${domain}:`, err.message);
+    });
+  } catch (err) {
+    console.warn('[ssl-provisioner] Failed to trigger certbot:', err.message);
+  }
 }
 
 /**
@@ -175,6 +207,9 @@ export async function provisionTenant({
     planType,
     trialEndsAt,
   });
+
+  // 7. Auto-expand SSL cert on production VPS for the new subdomain
+  ensureTenantSsl(slug);
 
   return {
     ok: true,

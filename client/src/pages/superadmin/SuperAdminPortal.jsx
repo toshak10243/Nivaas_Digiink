@@ -974,10 +974,21 @@ function CreateClientPage({ onBack, onSuccess }) {
   const [city, setCity] = useState('');
   const [state, setState] = useState('');
   const [subdomain, setSubdomain] = useState('');
-  const [planId, setPlanId] = useState('yearly');
-  const [duration, setDuration] = useState('1 Year');
+  const [planId, setPlanId] = useState('starter');
+  const [duration, setDuration] = useState('1 Month');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [createdTenant, setCreatedTenant] = useState(null);
+  const [copied, setCopied] = useState(false);
+
+  const handlePlanChange = (val) => {
+    setPlanId(val);
+    if (val === 'starter') setDuration('1 Month');
+    else if (val === 'professional') setDuration('6 Months');
+    else if (val === 'business') setDuration('1 Year');
+    else if (val === 'enterprise') setDuration('Lifetime');
+    else if (val === 'trial') setDuration('7 Days');
+  };
 
   const handleNameChange = (val) => {
     setBusinessName(val);
@@ -990,6 +1001,16 @@ function CreateClientPage({ onBack, onSuccess }) {
     setError('');
     setSubmitting(true);
     try {
+      const durationDaysMap = {
+        '7 Days': 7,
+        '1 Month': 30,
+        '3 Months': 90,
+        '6 Months': 180,
+        '1 Year': 365,
+        'Lifetime': 3650,
+      };
+      const durationDays = durationDaysMap[duration] || 30;
+
       const res = await saApi.createTenant({
         name: businessName,
         slug: subdomain,
@@ -997,14 +1018,158 @@ function CreateClientPage({ onBack, onSuccess }) {
         adminEmail: email,
         phone,
         planType: planId,
+        durationDays,
       });
-      onSuccess(res);
+
+      setCreatedTenant({
+        ...res,
+        businessName,
+        subdomain,
+        email,
+        planId,
+        duration,
+      });
     } catch (err) {
       setError(err.message || 'Provisioning failed');
     } finally {
       setSubmitting(false);
     }
   };
+
+  if (createdTenant) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 24, maxWidth: 840, margin: '0 auto' }}>
+        <div className="nc-card" style={{ padding: 32 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 20 }}>
+            <div style={{ width: 48, height: 48, borderRadius: '50%', background: '#E6F4EA', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#137333' }}>
+              {Icons.check}
+            </div>
+            <div>
+              <h2 style={{ fontSize: 22, fontWeight: 800, color: '#202124', margin: 0 }}>
+                Tenant Instance Successfully Deployed!
+              </h2>
+              <div style={{ fontSize: 14, color: '#5F6368', marginTop: 3 }}>
+                Physical PostgreSQL database isolated &amp; initial admin user registered
+              </div>
+            </div>
+          </div>
+
+          <div style={{ background: '#F8F9FA', borderRadius: 12, padding: 20, border: '1px solid #E8EAED', marginBottom: 24 }}>
+            <div className="nc-detail-row">
+              <span className="nc-detail-label">Client Name</span>
+              <span className="nc-detail-val" style={{ fontWeight: 700 }}>{createdTenant.businessName}</span>
+            </div>
+            <div className="nc-detail-row">
+              <span className="nc-detail-label">Tenant Subdomain</span>
+              <span className="nc-detail-val">
+                <a
+                  href={`https://${createdTenant.subdomain}.nivaas.space`}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: '#1A73E8', fontWeight: 700, textDecoration: 'none' }}
+                >
+                  https://{createdTenant.subdomain}.nivaas.space &rarr;
+                </a>
+              </span>
+            </div>
+            <div className="nc-detail-row">
+              <span className="nc-detail-label">Isolated Database</span>
+              <span className="nc-detail-val" style={{ fontFamily: 'monospace', fontWeight: 700, color: '#137333' }}>
+                nivaas_{createdTenant.subdomain}
+              </span>
+            </div>
+            <div className="nc-detail-row">
+              <span className="nc-detail-label">Subscription Tier</span>
+              <span className="nc-detail-val" style={{ textTransform: 'capitalize', fontWeight: 600 }}>
+                {createdTenant.planId} ({createdTenant.duration})
+              </span>
+            </div>
+          </div>
+
+          {/* Master Admin One-Time Credentials */}
+          <div style={{ border: '2px dashed #1A73E8', background: '#F1F3F4', borderRadius: 12, padding: 20, marginBottom: 24 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#1A73E8', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>
+              Client Admin One-Time Credentials
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+              <div>
+                <label style={{ fontSize: 12, color: '#5F6368', display: 'block', marginBottom: 4 }}>Admin Email</label>
+                <div style={{ background: '#fff', padding: '10px 14px', borderRadius: 8, border: '1px solid #DADCE0', fontWeight: 600, fontSize: 14 }}>
+                  {createdTenant.email}
+                </div>
+              </div>
+              <div>
+                <label style={{ fontSize: 12, color: '#5F6368', display: 'block', marginBottom: 4 }}>Temporary Password</label>
+                <div style={{ background: '#fff', padding: '10px 14px', borderRadius: 8, border: '1px solid #DADCE0', fontFamily: 'monospace', fontWeight: 700, fontSize: 14, color: '#D93025' }}>
+                  {createdTenant.tempPassword || 'Auto-generated'}
+                </div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
+              <button
+                type="button"
+                className="nc-btn"
+                style={{ background: '#fff', border: '1px solid #DADCE0', padding: '8px 14px', fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                onClick={() => {
+                  navigator.clipboard.writeText(`URL: https://${createdTenant.subdomain}.nivaas.space\nEmail: ${createdTenant.email}\nPassword: ${createdTenant.tempPassword}`);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2500);
+                }}
+              >
+                {Icons.copy}
+                <span>{copied ? 'Copied to Clipboard!' : 'Copy Credentials'}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Action buttons */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+            <div style={{ display: 'flex', gap: 12 }}>
+              <button
+                type="button"
+                className="nc-btn nc-btn-primary"
+                onClick={() => {
+                  onSuccess(createdTenant);
+                }}
+              >
+                Go to Client Directory &rarr;
+              </button>
+              <button
+                type="button"
+                className="nc-btn"
+                style={{ border: '1px solid #DADCE0' }}
+                onClick={() => {
+                  setCreatedTenant(null);
+                  setBusinessName('');
+                  setOwnerName('');
+                  setEmail('');
+                  setPhone('');
+                  setCity('');
+                  setState('');
+                  setSubdomain('');
+                  setPlanId('starter');
+                  setDuration('1 Month');
+                }}
+              >
+                + Create Another Client
+              </button>
+            </div>
+
+            <a
+              href={`https://${createdTenant.subdomain}.nivaas.space`}
+              target="_blank"
+              rel="noreferrer"
+              className="nc-btn nc-btn-dark"
+              style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            >
+              <span>Launch Client CRM App</span>
+              {Icons.launch}
+            </a>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -1128,14 +1293,14 @@ function CreateClientPage({ onBack, onSuccess }) {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
                 <select
                   value={planId}
-                  onChange={(e) => setPlanId(e.target.value)}
+                  onChange={(e) => handlePlanChange(e.target.value)}
                   style={{ width: '100%', padding: '11px 14px', borderRadius: 8, border: '1px solid #DADCE0', fontSize: 14, background: '#fff' }}
                 >
+                  <option value="starter">Starter Tier (Monthly - ₹2,999)</option>
+                  <option value="professional">Professional Tier (6 Months - ₹24,999)</option>
+                  <option value="business">Business Tier (1 Year - ₹44,999)</option>
+                  <option value="enterprise">Enterprise Tier (Lifetime - ₹99,999)</option>
                   <option value="trial">Free Trial (7 Days)</option>
-                  <option value="monthly">Starter Plan (Monthly)</option>
-                  <option value="6months">Professional Plan (6 Months)</option>
-                  <option value="yearly">Annual Plan (1 Year)</option>
-                  <option value="lifetime">Enterprise Tier (Lifetime)</option>
                 </select>
 
                 <select
@@ -1143,7 +1308,9 @@ function CreateClientPage({ onBack, onSuccess }) {
                   onChange={(e) => setDuration(e.target.value)}
                   style={{ width: '100%', padding: '11px 14px', borderRadius: 8, border: '1px solid #DADCE0', fontSize: 14, background: '#fff' }}
                 >
+                  <option value="7 Days">7 Days Trial</option>
                   <option value="1 Month">1 Month</option>
+                  <option value="3 Months">3 Months</option>
                   <option value="6 Months">6 Months</option>
                   <option value="1 Year">1 Year</option>
                   <option value="Lifetime">Lifetime Deal</option>
