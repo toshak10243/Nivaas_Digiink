@@ -1,6 +1,6 @@
 ﻿# Checkbox and bulk action release
 
-Live deployment: `root@200.234.46.234`, application `/var/www/nivaas`, PM2 process `nivaas`, domain `https://nivass.digiinksolutions.com`.
+Live deployment: `root@200.234.46.234`, application `/var/www/nivaas`, PM2 process `nivaas`, domain `https://nivaas.space` (redirect from `https://nivass.digiinksolutions.com`).
 
 - Leads > List: select rows or all visible leads. Changing filters clears selection.
 - Bulk stage updates and follow-up completion respect lead ownership. Transfers and permanent deletion are admin-only; booked leads are protected.
