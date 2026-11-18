@@ -96,6 +96,66 @@ const Icons = {
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <line x1="19" y1="12" x2="5" y2="12" /><polyline points="12 19 5 12 12 5" />
     </svg>
+  ),
+  clock: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
+    </svg>
+  ),
+  alert: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+    </svg>
+  ),
+  hourglass: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 22h14" /><path d="M5 2h14" /><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22" /><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2" />
+    </svg>
+  ),
+  lock: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </svg>
+  ),
+  rupee: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 3h12" /><path d="M6 8h12" /><path d="M6 13l8.5 8" /><path d="M6 13h3a4 4 0 0 0 0-8" />
+    </svg>
+  ),
+  chart: (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" />
+    </svg>
+  ),
+  donut: (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="4" />
+    </svg>
+  ),
+  grid: (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" />
+    </svg>
+  ),
+  filter: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+    </svg>
+  ),
+  ribbon: (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="8" r="6" /><path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11" />
+    </svg>
+  ),
+  building: (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="4" y="2" width="16" height="20" rx="2" ry="2" /><path d="M9 22v-4h6v4" /><path d="M8 6h.01" /><path d="M16 6h.01" /><path d="M12 6h.01" /><path d="M12 10h.01" /><path d="M12 14h.01" /><path d="M16 10h.01" /><path d="M16 14h.01" /><path d="M8 10h.01" /><path d="M8 14h.01" />
+    </svg>
+  ),
+  laptop: (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="3" width="20" height="14" rx="2" ry="2" /><line x1="2" y1="20" x2="22" y2="20" />
+    </svg>
   )
 };
 
@@ -141,9 +201,36 @@ const saApi = {
   updateSettings: (body) => saApi.request('/api/superadmin/settings', { method: 'PUT', body }),
 };
 
+const getPageFromHash = () => {
+  const h = (window.location.hash || '').replace(/^#\/?/, '').split('?')[0].replace(/\/$/, '');
+  if (h === 'clients/new' || h === 'clients-new') return 'clients-new';
+  if (['dashboard', 'clients', 'payments', 'plans', 'settings'].includes(h)) return h;
+  return 'dashboard';
+};
+
 export default function SuperAdminPortal() {
   const [authed, setAuthed] = useState(saApi.isLoggedIn());
-  const [currentPage, setCurrentPage] = useState('dashboard'); // 'dashboard', 'clients', 'clients-new', 'payments', 'plans', 'settings'
+  const [currentPage, setCurrentPageState] = useState(getPageFromHash); // 'dashboard', 'clients', 'clients-new', 'payments', 'plans', 'settings'
+
+  const setCurrentPage = useCallback((page) => {
+    setCurrentPageState(page);
+    if (page === 'clients-new') {
+      window.location.hash = '#/clients/new';
+    } else {
+      window.location.hash = `#/${page}`;
+    }
+  }, []);
+
+  useEffect(() => {
+    const onHash = () => {
+      setCurrentPageState(getPageFromHash());
+    };
+    window.addEventListener('hashchange', onHash);
+    if (!window.location.hash || window.location.hash === '#/') {
+      window.location.hash = '#/dashboard';
+    }
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
   const [metrics, setMetrics] = useState(null);
   const [tenants, setTenants] = useState([]);
   const [payments, setPayments] = useState([]);
@@ -359,7 +446,7 @@ export default function SuperAdminPortal() {
           {/* Right Clock & Master Pill */}
           <div className="nc-topbar-right">
             <div className="nc-clock-badge">
-              <span>🕒</span>
+              <span style={{ display: 'flex', color: '#5F6368' }}>{Icons.clock}</span>
               <span>{timeStr || '18 Nov 2026 • 03:16:32 PM'}</span>
             </div>
             <span className="nc-master-pill">Master Console</span>
@@ -410,7 +497,9 @@ export default function SuperAdminPortal() {
                   <div className="nc-kpi-card">
                     <div className="nc-kpi-header">
                       <span className="nc-kpi-label">ACTIVE INSTANCES</span>
-                      <div className="nc-icon-badge" style={{ background: '#E6F4EA', color: '#1E8E3E' }}>✓</div>
+                      <div className="nc-icon-badge" style={{ background: '#E6F4EA', color: '#1E8E3E' }}>
+                        {Icons.check}
+                      </div>
                     </div>
                     <div className="nc-kpi-val">{metrics?.tenants?.active_tenants ?? tenants.length}</div>
                     <div className="nc-kpi-sub">Out of {tenants.length} total tenants</div>
@@ -419,7 +508,9 @@ export default function SuperAdminPortal() {
                   <div className="nc-kpi-card">
                     <div className="nc-kpi-header">
                       <span className="nc-kpi-label">EXPIRING SOON</span>
-                      <div className="nc-icon-badge" style={{ background: '#FEF7E0', color: '#B06000' }}>!</div>
+                      <div className="nc-icon-badge" style={{ background: '#FEF7E0', color: '#B06000' }}>
+                        {Icons.alert}
+                      </div>
                     </div>
                     <div className="nc-kpi-val">0</div>
                     <div className="nc-kpi-sub">Renewal within 7 days</div>
@@ -428,7 +519,9 @@ export default function SuperAdminPortal() {
                   <div className="nc-kpi-card">
                     <div className="nc-kpi-header">
                       <span className="nc-kpi-label">GRACE PERIOD</span>
-                      <div className="nc-icon-badge" style={{ background: '#FEF7E0', color: '#B06000' }}>⏳</div>
+                      <div className="nc-icon-badge" style={{ background: '#FEF7E0', color: '#B06000' }}>
+                        {Icons.hourglass}
+                      </div>
                     </div>
                     <div className="nc-kpi-val">0</div>
                     <div className="nc-kpi-sub">Overdue renewal window</div>
@@ -437,7 +530,9 @@ export default function SuperAdminPortal() {
                   <div className="nc-kpi-card">
                     <div className="nc-kpi-header">
                       <span className="nc-kpi-label">LOCKED ACCOUNTS</span>
-                      <div className="nc-icon-badge" style={{ background: '#FCE8E6', color: '#D93025' }}>🔒</div>
+                      <div className="nc-icon-badge" style={{ background: '#FCE8E6', color: '#D93025' }}>
+                        {Icons.lock}
+                      </div>
                     </div>
                     <div className="nc-kpi-val">{metrics?.tenants?.expired_tenants || 0}</div>
                     <div className="nc-kpi-sub">Access restricted</div>
@@ -446,7 +541,9 @@ export default function SuperAdminPortal() {
                   <div className="nc-kpi-card">
                     <div className="nc-kpi-header">
                       <span className="nc-kpi-label">MONTHLY REVENUE</span>
-                      <div className="nc-icon-badge" style={{ background: '#E8F0FE', color: '#1A73E8' }}>₹</div>
+                      <div className="nc-icon-badge" style={{ background: '#E8F0FE', color: '#1A73E8' }}>
+                        {Icons.rupee}
+                      </div>
                     </div>
                     <div className="nc-kpi-val" style={{ fontSize: 24 }}>
                       {money(metrics?.totalRevenue || 194987)}
@@ -461,7 +558,8 @@ export default function SuperAdminPortal() {
                   <div className="nc-card">
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <span style={{ color: '#1A73E8', fontWeight: 800 }}>| 📈</span>
+                        <div style={{ width: 4, height: 16, background: '#1A73E8', borderRadius: 2 }} />
+                        <span style={{ color: '#1A73E8', display: 'flex' }}>{Icons.chart}</span>
                         <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: '#202124' }}>
                           Revenue &amp; Collections Trend
                         </h3>
@@ -495,7 +593,8 @@ export default function SuperAdminPortal() {
                   {/* Donut Chart Card */}
                   <div className="nc-card">
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 20 }}>
-                      <span style={{ color: '#1E8E3E', fontWeight: 800 }}>| 🟢</span>
+                      <div style={{ width: 4, height: 16, background: '#1E8E3E', borderRadius: 2 }} />
+                      <span style={{ color: '#1E8E3E', display: 'flex' }}>{Icons.donut}</span>
                       <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: '#202124' }}>
                         Subscription Status Health
                       </h3>
@@ -580,8 +679,9 @@ export default function SuperAdminPortal() {
                       <option value="lifetime">Enterprise / Lifetime</option>
                     </select>
 
-                    <button className="nc-btn nc-btn-primary" onClick={loadAll}>
-                      Apply Filters
+                    <button className="nc-btn nc-btn-primary" onClick={loadAll} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {Icons.filter}
+                      <span>Apply Filters</span>
                     </button>
                   </div>
                 </div>
@@ -590,7 +690,7 @@ export default function SuperAdminPortal() {
                 <div className="nc-card" style={{ padding: 0, overflow: 'hidden' }}>
                   <div style={{ padding: '18px 24px', borderBottom: '1px solid #E0E3E7', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 15, fontWeight: 700, color: '#202124' }}>
-                      <span style={{ color: '#1A73E8' }}>📊</span>
+                      <span style={{ color: '#1A73E8', display: 'flex' }}>{Icons.grid}</span>
                       <span>Active Tenant Accounts</span>
                     </div>
                     <span style={{ fontSize: 12.5, color: '#5F6368', fontWeight: 600 }}>
@@ -893,6 +993,7 @@ function CreateClientPage({ onBack, onSuccess }) {
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
               <span style={{ width: 4, height: 16, background: '#1A73E8', borderRadius: 4 }} />
+              <span style={{ color: '#1A73E8', display: 'flex' }}>{Icons.building}</span>
               <span style={{ fontSize: 14, fontWeight: 700, color: '#202124' }}>Tenant Organization Details</span>
             </div>
 
@@ -961,6 +1062,7 @@ function CreateClientPage({ onBack, onSuccess }) {
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
               <span style={{ width: 4, height: 16, background: '#1E8E3E', borderRadius: 4 }} />
+              <span style={{ color: '#1E8E3E', display: 'flex' }}>{Icons.laptop}</span>
               <span style={{ fontSize: 14, fontWeight: 700, color: '#202124' }}>Subscription Tier &amp; Subdomain Route</span>
             </div>
 
@@ -1024,7 +1126,7 @@ function CreateClientPage({ onBack, onSuccess }) {
           </h3>
 
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', textAlign: 'center', padding: '30px 10px' }}>
-            <div style={{ fontSize: 44, color: '#94A3B8', marginBottom: 12 }}>📋</div>
+            <div style={{ marginBottom: 12, color: '#94A3B8' }}>{Icons.laptop}</div>
             <div style={{ fontSize: 14, color: '#5F6368', maxWidth: 280 }}>
               Database: <b style={{ color: '#1A73E8' }}>nivaas_{subdomain || 'tenant'}</b><br />
               Subdomain: <b style={{ color: '#1A73E8' }}>{subdomain ? `${subdomain}.nivaas.space` : 'Pending'}</b><br /><br />
@@ -1066,7 +1168,9 @@ function PaymentsPage({ payments, pendingPayments, confirmedPayments, rejectedPa
         <div className="nc-kpi-card">
           <div className="nc-kpi-header">
             <span className="nc-kpi-label">PENDING REVIEW</span>
-            <div className="nc-icon-badge" style={{ background: '#FEF7E0', color: '#B06000' }}>⏳</div>
+            <div className="nc-icon-badge" style={{ background: '#FEF7E0', color: '#B06000' }}>
+              {Icons.hourglass}
+            </div>
           </div>
           <div className="nc-kpi-val" style={{ color: '#B06000' }}>{pendingPayments.length}</div>
           <div className="nc-kpi-sub">Awaiting manual bank reconciliation</div>
@@ -1075,7 +1179,9 @@ function PaymentsPage({ payments, pendingPayments, confirmedPayments, rejectedPa
         <div className="nc-kpi-card">
           <div className="nc-kpi-header">
             <span className="nc-kpi-label">CONFIRMED PAYMENTS</span>
-            <div className="nc-icon-badge" style={{ background: '#E6F4EA', color: '#1E8E3E' }}>✓</div>
+            <div className="nc-icon-badge" style={{ background: '#E6F4EA', color: '#1E8E3E' }}>
+              {Icons.check}
+            </div>
           </div>
           <div className="nc-kpi-val" style={{ color: '#1E8E3E' }}>{confirmedPayments.length}</div>
           <div className="nc-kpi-sub">Approved and extended subscriptions</div>
@@ -1084,7 +1190,9 @@ function PaymentsPage({ payments, pendingPayments, confirmedPayments, rejectedPa
         <div className="nc-kpi-card">
           <div className="nc-kpi-header">
             <span className="nc-kpi-label">REJECTED REQUESTS</span>
-            <div className="nc-icon-badge" style={{ background: '#FCE8E6', color: '#D93025' }}>⊘</div>
+            <div className="nc-icon-badge" style={{ background: '#FCE8E6', color: '#D93025' }}>
+              {Icons.cross}
+            </div>
           </div>
           <div className="nc-kpi-val" style={{ color: '#D93025' }}>{rejectedPayments.length}</div>
           <div className="nc-kpi-sub">Invalid transaction or declined proofs</div>
