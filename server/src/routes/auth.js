@@ -20,7 +20,7 @@ r.post('/login', rateLimit({ windowMs: 15 * 60_000, limit: 10, key: req => `logi
     token: sign(u),
     refreshToken: signRefresh(u),
     expiresIn: config.jwtExpiresIn,
-    user: { id: u.id, name: u.name, role: u.role, email: u.email }
+    user: { id: u.id, name: u.name, role: u.role, email: u.email, must_change_password: !!u.must_change_password }
   });
 }));
 
@@ -40,7 +40,7 @@ r.post('/refresh', h(async (req, res) => {
     token: sign(u),
     refreshToken: signRefresh(u),
     expiresIn: config.jwtExpiresIn,
-    user: { id: u.id, name: u.name, role: u.role, email: u.email }
+    user: { id: u.id, name: u.name, role: u.role, email: u.email, must_change_password: !!u.must_change_password }
   });
 }));
 
@@ -71,7 +71,7 @@ r.post('/password', requireAuth, h(async (req, res) => {
   if (typeof current !== 'string' || !current || current.length > 1024) throw fail(400, 'Current password is required');
   if (!(await bcrypt.compare(current, u.password_hash))) throw fail(400, 'Current password is wrong');
   if (typeof next !== 'string' || next.length < 8 || next.length > 1024) throw fail(400, 'New password must be 8 to 1024 characters');
-  await q(`UPDATE users SET password_hash = $2 WHERE id = $1`, [u.id, await bcrypt.hash(next, 10)]);
+  await q(`UPDATE users SET password_hash = $2, must_change_password = false WHERE id = $1`, [u.id, await bcrypt.hash(next, 10)]);
   res.sendStatus(204);
 }));
 

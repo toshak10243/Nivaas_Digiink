@@ -21,6 +21,7 @@ import EmiCalculatorModal from './components/EmiCalculatorModal.jsx';
 import ProfileModal from './components/ProfileModal.jsx';
 import RenewSubscriptionModal from './pages/RenewSubscription.jsx';
 import SuperAdminPortal from './pages/superadmin/SuperAdminPortal.jsx';
+import ForceChangePasswordModal from './components/ForceChangePasswordModal.jsx';
 
 const NAV = {
   admin: [
@@ -180,7 +181,7 @@ function Shell({ route, go, say, toast, onLogout, onSwitchRole }) {
         <header className="topbar">
           {adminWorkspace && <button className="iconbtn dashboard-menu-button" aria-label="Open navigation" aria-expanded={sidebarOpen} onClick={() => setSidebarOpen(value => !value)}><Icon name="menu" /></button>}
           <div style={{ minWidth: 0 }}><h1>{TITLES[page]}</h1></div><div className="spacer" />
-          {billing && billing.days_left !== undefined && (
+          {billing && (billing.plan_type === 'trial' || billing.is_expired) && (
             <button
               type="button"
               className="trial-badge-btn"
@@ -237,6 +238,7 @@ function Shell({ route, go, say, toast, onLogout, onSwitchRole }) {
       {showEmi && <EmiCalculatorModal onClose={() => setShowEmi(false)} say={say} />}
       {showProfile && <ProfileModal me={me} onClose={() => setShowProfile(false)} onSaved={() => { setShowProfile(false); reloadMe(); }} onAvatarSaved={reloadMe} say={say} />}
       <RenewSubscriptionModal isOpen={showRenew} onClose={() => setShowRenew(false)} billing={billing} onRenewed={reloadBilling} say={say} />
+      {me?.user?.must_change_password && <ForceChangePasswordModal me={me} reloadMe={reloadMe} say={say} />}
       {toast && <div className="toast" role="status">{toast}</div>}
     </div>
   );

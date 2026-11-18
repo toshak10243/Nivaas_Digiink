@@ -11,7 +11,7 @@ import { avatarUpload, fileUrl, verifyUploadedFiles } from './projects.js';
 import { email as validEmail, phone as validPhone, text, number, oneOf, record, uuid } from '../lib/validate.js';
 
 const r = Router();
-const USER_COLS = 'id, role, name, email, phone, active, profile, last_login, created_at';
+const USER_COLS = 'id, role, name, email, phone, active, profile, last_login, must_change_password, created_at';
 
 async function assertOrgUser(id, org, roles) {
   const user = await one(`SELECT id, role, active FROM users WHERE id = $1 AND org_id = $2`, [id, org]);

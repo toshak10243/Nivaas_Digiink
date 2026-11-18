@@ -82,11 +82,32 @@ export function Logo({ size = 34, className = '', style = {} }) {
   );
 }
 
-export const initials = n => (n || '#').replace(/[^A-Za-zऀ-ॿ ]/g, '').split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '#';
+export const initials = n => {
+  if (!n) return 'U';
+  const parts = String(n).trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return 'U';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+};
 const HUES = ['#E8EAFE', '#FFF0E3', '#E2F6EC', '#FDE9EA', '#EEF1F7', '#FFF2D9'];
 export function Avatar({ name, size, tone, src }) {
+  const [imgErr, setImgErr] = useState(false);
   const h = HUES[(name || '').split('').reduce((a, c) => a + c.charCodeAt(0), 0) % HUES.length];
-  return <div className={'av' + (size === 'lg' ? ' lg' : size === 'sm' ? ' sm' : '')} style={tone !== false ? { background: h, borderColor: 'transparent', color: '#2b2f52' } : undefined}>{src ? <img src={src} alt="" /> : initials(name)}</div>;
+  const showImg = Boolean(src && !imgErr);
+  return (
+    <div
+      className={'av' + (size === 'lg' ? ' lg' : size === 'sm' ? ' sm' : '')}
+      style={tone !== false ? { background: showImg ? 'transparent' : h, borderColor: 'transparent', color: '#1E293B', fontWeight: 700 } : undefined}
+    >
+      {showImg ? (
+        <img src={src} alt="" onError={() => setImgErr(true)} />
+      ) : (
+        <span style={{ fontSize: size === 'lg' ? 17 : size === 'sm' ? 11 : 13, letterSpacing: 0.5 }}>
+          {initials(name)}
+        </span>
+      )}
+    </div>
+  );
 }
 
 const STATUS = {
