@@ -92,15 +92,28 @@ export const initials = n => {
 const HUES = ['#E8EAFE', '#FFF0E3', '#E2F6EC', '#FDE9EA', '#EEF1F7', '#FFF2D9'];
 export function Avatar({ name, size, tone, src }) {
   const [imgErr, setImgErr] = useState(false);
+
+  useEffect(() => {
+    setImgErr(false);
+  }, [src]);
+
   const h = HUES[(name || '').split('').reduce((a, c) => a + c.charCodeAt(0), 0) % HUES.length];
   const showImg = Boolean(src && !imgErr);
   return (
     <div
       className={'av' + (size === 'lg' ? ' lg' : size === 'sm' ? ' sm' : '')}
-      style={tone !== false ? { background: showImg ? 'transparent' : h, borderColor: 'transparent', color: '#1E293B', fontWeight: 700 } : undefined}
+      style={{
+        overflow: 'hidden',
+        ...(tone !== false ? { background: showImg ? 'transparent' : h, borderColor: 'transparent', color: '#1E293B', fontWeight: 700 } : {})
+      }}
     >
       {showImg ? (
-        <img src={src} alt="" onError={() => setImgErr(true)} />
+        <img
+          src={src}
+          alt={name || ''}
+          onError={() => setImgErr(true)}
+          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', borderRadius: 'inherit' }}
+        />
       ) : (
         <span style={{ fontSize: size === 'lg' ? 17 : size === 'sm' ? 11 : 13, letterSpacing: 0.5 }}>
           {initials(name)}

@@ -40,6 +40,7 @@ const uploadHeaders = (res, _filePath) => {
   res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
 };
 app.use('/uploads', express.static(config.uploadDir, { maxAge: '7d', fallthrough: true, setHeaders: uploadHeaders }));
+app.use('/uploads', express.static(path.join(config.uploadDir, 'private'), { maxAge: '7d', fallthrough: true, setHeaders: uploadHeaders }));
 app.use('/uploads/sample', express.static(path.join(dir, '../uploads/sample'), { maxAge: '7d', setHeaders: uploadHeaders }));
 
 // Resolve tenant and route DB queries dynamically to tenant database

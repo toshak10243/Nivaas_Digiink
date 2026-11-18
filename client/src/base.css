@@ -53,7 +53,7 @@ h1,h2,h3{font-family:var(--f-display);margin:0;letter-spacing:-.02em;text-wrap:b
 .pulse.off{background:var(--rail-dim);animation:none}
 @keyframes pulse{70%{box-shadow:0 0 0 8px rgba(59,213,138,0)}100%{box-shadow:0 0 0 0 rgba(59,213,138,0)}}
 .bizchip{display:flex;align-items:center;gap:10px;padding:8px;border-radius:10px;font-size:13px}
-.bizchip .av{background:linear-gradient(135deg,var(--sun-2),var(--sun));color:#fff;border:0}
+.bizchip .av:not(:has(img)){background:linear-gradient(135deg,var(--sun-2),var(--sun));color:#fff;border:0}
 .bizchip b{display:block;color:var(--rail-ink);font-size:14px;line-height:1.2}
 .bizchip span{color:var(--rail-dim)}
 

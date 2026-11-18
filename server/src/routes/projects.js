@@ -52,7 +52,7 @@ export const privateUpload = multer({
   fileFilter: (_req, f, cb) => cb(ALLOWED.test(f.mimetype) ? null : Object.assign(new Error('Only photos, videos and PDFs are allowed'), { status: 400 }), ALLOWED.test(f.mimetype)),
 });
 export const avatarUpload = multer({
-  storage: privateDiskStorage,
+  storage: diskStorage,
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_req, f, cb) => {
     const allowed = ['image/jpeg', 'image/png', 'image/webp'].includes(f.mimetype);
