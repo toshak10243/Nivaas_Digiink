@@ -117,6 +117,14 @@ class TenantPoolManager {
     }
   }
 
+  async closePool(dbName) {
+    const entry = this.pools.get(dbName);
+    if (entry) {
+      this.pools.delete(dbName);
+      await entry.pool.end().catch(() => {});
+    }
+  }
+
   async closeAll() {
     clearInterval(this.cleanerInterval);
     const closing = [];
@@ -158,7 +166,11 @@ export function runWithTenant(tenantContext, callback) {
  */
 export const masterDb = {
   q: (text, params) => masterPool.query(text, params),
+  query: (text, params) => masterPool.query(text, params),
   one: async (text, params) => (await masterPool.query(text, params)).rows[0] || null,
+  oneOrNone: async (text, params) => (await masterPool.query(text, params)).rows[0] || null,
   many: async (text, params) => (await masterPool.query(text, params)).rows,
+  manyOrNone: async (text, params) => (await masterPool.query(text, params)).rows,
+  none: async (text, params) => { await masterPool.query(text, params); },
 };
 

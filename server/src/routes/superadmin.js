@@ -2,7 +2,7 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { masterDb } from '../lib/tenant-db.js';
+import { masterDb, tenantPoolManager } from '../lib/tenant-db.js';
 import { clearTenantCache } from '../middleware/tenant-resolver.js';
 import { provisionTenant } from '../services/tenant-provisioner.js';
 import { sendPaymentApprovedEmail } from '../services/mailer.js';
@@ -225,13 +225,20 @@ r.patch('/tenants/:id', requireSuperAdmin, h(async (req, res) => {
  */
 r.delete('/tenants/:id', requireSuperAdmin, h(async (req, res) => {
   const { id } = req.params;
-  const tenant = await masterDb.one(`SELECT * FROM tenants WHERE id = $1`, [id]);
+  const tenant = await masterDb.oneOrNone(`SELECT * FROM tenants WHERE id = $1`, [id]);
   if (!tenant) throw fail(404, 'Tenant not found');
 
-  await masterDb.query(`DELETE FROM tenants WHERE id = $1`, [id]);
+  // 1. Delete associated payments & tenant catalog record from master database
+  await masterDb.none(`DELETE FROM subscription_payments WHERE tenant_id = $1`, [id]);
+  await masterDb.none(`DELETE FROM tenants WHERE id = $1`, [id]);
   clearTenantCache(tenant.slug);
 
-  // Safely drop isolated database if it was an auto-provisioned tenant DB
+  // 2. Close any active connection pool for this tenant
+  if (tenant.db_name) {
+    await tenantPoolManager.closePool(tenant.db_name);
+  }
+
+  // 3. Safely drop isolated database if it was an auto-provisioned tenant DB
   if (tenant.db_name && tenant.db_name.startsWith('nivaas_') && tenant.db_name !== 'nivaas_master' && tenant.db_name !== 'nivaas') {
     try {
       const pg = await import('pg');
@@ -242,14 +249,15 @@ r.delete('/tenants/:id', requireSuperAdmin, h(async (req, res) => {
         `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`,
         [tenant.db_name]
       );
-      await rootClient.query(`DROP DATABASE IF EXISTS ${tenant.db_name}`);
+      await rootClient.query(`DROP DATABASE IF EXISTS "${tenant.db_name}"`);
       await rootClient.end().catch(() => {});
+      console.log(`[superadmin] Successfully dropped tenant physical database: "${tenant.db_name}"`);
     } catch (dropErr) {
       console.warn(`[superadmin] Could not drop database "${tenant.db_name}":`, dropErr.message);
     }
   }
 
-  res.json({ ok: true, message: `Tenant "${tenant.name}" deleted successfully.` });
+  res.json({ ok: true, message: `Tenant "${tenant.name}" and database "${tenant.db_name}" deleted successfully.` });
 }));
 
 /**
