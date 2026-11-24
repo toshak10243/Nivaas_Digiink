@@ -11,7 +11,7 @@ function label(d) {
   return diff === 0 ? 'Today' : diff === 1 ? 'Tomorrow' : diff === -1 ? 'Yesterday' : new Date(d).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short' });
 }
 
-export default function Visits({ go, say }) {
+export default function Visits({ me, go, say }) {
   const [visits, reload] = useLoad(() => api.get('/api/visits'), []);
   const [filter, setFilter] = useState('upcoming');
   const [bookingModal, setBookingModal] = useState(false);
@@ -177,9 +177,9 @@ export default function Visits({ go, say }) {
                   </div>
 
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', alignSelf: 'center' }}>
-                    <button className="btn sm wa-btn" title="Send WhatsApp Pass" onClick={() => sendWhatsAppPass(v)}>
+                    {me?.user?.role !== 'broker' && <button className="btn sm wa-btn" title="Send WhatsApp Pass" onClick={() => sendWhatsAppPass(v)}>
                       <Icon name="wa" />WhatsApp Pass
-                    </button>
+                    </button>}
 
                     {v.status === 'scheduled' && (
                       <button className="btn sm" onClick={() => confirmVisit(v)}>

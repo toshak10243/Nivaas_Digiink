@@ -190,9 +190,10 @@ From `server/`:
 npm test                 # unit checks; no database required
 npm run check:syntax     # parse server JavaScript and client JavaScript / JSX
 TEST_DATABASE_URL=postgres://nivaas:password@localhost:5432/nivaas_test npm run test:integration
+npm run test:integration:local # creates and removes a temporary test database on local PostgreSQL using server/.env DATABASE_URL
 ```
 
-Integration checks require a dedicated PostgreSQL database and a role that can create and drop schemas. The suite creates a uniquely named temporary schema, starts the API against it, exercises role access, lead privacy, competing bookings, payment limits, customer tickets, public share links, upload rejection, and integration failure handling, then drops its schema and temporary uploads. It does not seed or clear the database's `public` schema.
+Integration checks require a dedicated PostgreSQL database named with an `_test`, `_testing`, or `_integration` suffix and a role that can create and drop schemas. The suite creates a uniquely named temporary schema, starts the API against it, exercises role access, lead privacy and input validation, competing bookings, payment limits, customer tickets, public share links, upload rejection, and integration failure handling, then drops its schema and temporary uploads. It does not seed or clear the database's `public` schema. `npm run test:fast` runs the client build, syntax checks, and unit tests without needing a database. `npm run test:integration:local` creates and removes a uniquely named temporary database on local PostgreSQL using `server/.env` `DATABASE_URL`, and `npm run verify:local` runs all checks using that temporary database. `npm run verify` runs the full suite against `TEST_DATABASE_URL` for CI or a separately provisioned test database.
 
 ## 6. Kya live test hua, kya nahi
 

@@ -11,10 +11,11 @@ export default function ShareModal({
   project,
   lead,
   clientPhone,
+  hideDirectNumber = false,
   say,
   onClose,
 }) {
-  const initialPhone = String(clientPhone || lead?.phone || '').replace(/\D/g, '').replace(/^91/, '').replace(/^0+/, '');
+  const initialPhone = hideDirectNumber ? '' : String(clientPhone || lead?.phone || '').replace(/\D/g, '').replace(/^91/, '').replace(/^0+/, '');
   const [targetPhone, setTargetPhone] = useState(initialPhone);
   
   // Customization options
@@ -134,7 +135,7 @@ export default function ShareModal({
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         {/* Direct Send to Number Box */}
-        <div className="card" style={{ background: 'var(--panel-2)', boxShadow: 'none' }}>
+        {!hideDirectNumber && <div className="card" style={{ background: 'var(--panel-2)', boxShadow: 'none' }}>
           <div className="card-b" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink)' }}>
               <Icon name="wa" style={{ width: 15, height: 15, verticalAlign: -2, color: '#25D366' }} /> Send Directly to WhatsApp Number:
@@ -163,7 +164,7 @@ export default function ShareModal({
                 : 'Or click "Share on WhatsApp" below to select any contact inside WhatsApp.'}
             </span>
           </div>
-        </div>
+        </div>}
 
         {/* Link box */}
         <div className="sharebox">

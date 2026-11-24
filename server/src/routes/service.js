@@ -4,7 +4,8 @@ import { one, many, q } from '../db.js';
 import { h, allow, fail } from '../lib/auth.js';
 import { settingsOf } from '../settings.js';
 import { notify } from '../services/notify.js';
-import { upload, verifyUploadedFiles, fileUrl } from './projects.js';
+import { privateUpload, verifyUploadedFiles, privateFileKey } from './projects.js';
+import { privateFileUrl } from './private-files.js';
 import { oneOf, number, text, uuid } from '../lib/validate.js';
 
 const r = Router();
@@ -52,24 +53,25 @@ r.get('/portal', allow('customer', 'admin', 'sales'), h(async (req, res) => {
 // ---------- tickets ----------
 function ticketScope(user) {
   if (user.role === 'admin') return { sql: '', vals: [] };
-  if (user.role === 'customer') return { sql: ' AND t.customer_id = $2', vals: [user.id] };
+  if (user.role === 'customer') return { sql: ' AND t.customer_id = $3', vals: [user.id] };
   if (user.role === 'maintenance') return { sql: '', vals: [] }; // whole queue
-  if (user.role === 'sales') return { sql: ' AND b.sold_by = $2', vals: [user.id] };
+  if (user.role === 'sales') return { sql: ' AND b.sold_by = $3', vals: [user.id] };
   throw fail(403, 'No access');
 }
 
 r.get('/tickets', h(async (req, res) => {
   const s = ticketScope(req.user);
-  const vals = [req.user.org, ...s.vals];
+  const vals = [req.user.org, req.user.role, ...s.vals];
   let extra = '';
   if (req.query.status) { oneOf(req.query.status, 'Ticket status filter', ['open', 'in_progress', 'resolved', 'closed'], { optional: false }); vals.push(req.query.status); extra += ` AND t.status = $${vals.length}`; }
-  res.json(await many(
+  const rows = await many(
     `SELECT t.*, u.unit_no, p.name AS project_name, c.name AS customer_name, c.phone AS customer_phone, m.name AS assigned_name,
-       (SELECT url FROM ticket_files f WHERE f.ticket_id = t.id ORDER BY created_at LIMIT 1) AS thumb,
+       (SELECT f.id FROM ticket_files f LEFT JOIN ticket_comments tc ON tc.id = f.comment_id WHERE f.ticket_id = t.id AND ($2 <> 'customer' OR f.comment_id IS NULL OR tc.internal = false) ORDER BY f.created_at LIMIT 1) AS thumb_id,
        (SELECT count(*)::int FROM ticket_comments x WHERE x.ticket_id = t.id) AS comments
      FROM tickets t LEFT JOIN units u ON u.id = t.unit_id LEFT JOIN projects p ON p.id = u.project_id LEFT JOIN users c ON c.id = t.customer_id
      LEFT JOIN users m ON m.id = t.assigned_to LEFT JOIN bookings b ON b.id = t.booking_id
-     WHERE t.org_id = $1${s.sql}${extra} ORDER BY (t.status IN ('resolved','closed')), t.sla_due_at LIMIT 300`, vals));
+     WHERE t.org_id = $1${s.sql}${extra} ORDER BY (t.status IN ('resolved','closed')), t.sla_due_at LIMIT 300`, vals);
+  res.json(rows.map(({ thumb_id, ...row }) => ({ ...row, thumb: thumb_id ? privateFileUrl('tickets', thumb_id, req.user) : null })));
 }));
 
 r.get('/tickets/:id', h(async (req, res) => {
@@ -81,13 +83,15 @@ r.get('/tickets/:id', h(async (req, res) => {
   const { role, id } = req.user;
   const ok = t && (role === 'admin' || role === 'maintenance' || (role === 'customer' && t.customer_id === id) || (role === 'sales' && t.sold_by === id));
   if (!ok) throw fail(404, 'Ticket not found');
-  t.files = await many(`SELECT * FROM ticket_files WHERE ticket_id = $1 ORDER BY created_at`, [t.id]);
+  const files = await many(`SELECT f.id FROM ticket_files f LEFT JOIN ticket_comments c ON c.id = f.comment_id
+    WHERE f.ticket_id = $1 AND ($2 <> 'customer' OR f.comment_id IS NULL OR c.internal = false) ORDER BY f.created_at`, [t.id, req.user.role]);
+  t.files = files.map(f => ({ id: f.id, url: privateFileUrl('tickets', f.id, req.user) }));
   t.comments = await many(`SELECT x.*, u.name, u.role FROM ticket_comments x LEFT JOIN users u ON u.id = x.author_id WHERE x.ticket_id = $1 ${req.user.role === 'customer' ? 'AND NOT x.internal' : ''} ORDER BY x.created_at`, [t.id]);
   res.json(t);
 }));
 
 /** Customer raises a complaint (with photos). Goes to the least-busy maintenance person + the sales agent + admins. */
-r.post('/tickets', allow('customer', 'admin', 'sales'), upload.array('photos', 6), verifyUploadedFiles, h(async (req, res) => {
+r.post('/tickets', allow('customer', 'admin', 'sales'), privateUpload.array('photos', 6), verifyUploadedFiles, h(async (req, res) => {
   const { booking_id, category, title, description, priority = 'normal' } = req.body || {};
   uuid(booking_id, 'Booking ID');
   const cleanTitle = text(title, 'Ticket title', { optional: false, max: 160 });
@@ -106,7 +110,7 @@ r.post('/tickets', allow('customer', 'admin', 'sales'), upload.array('photos', 6
   const t = await one(`INSERT INTO tickets (org_id, booking_id, unit_id, customer_id, category, title, description, priority, assigned_to, sla_due_at)
                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now() + ($10 || ' hours')::interval) RETURNING *`,
     [req.user.org, b.id, b.unit_id, b.customer_id, category, cleanTitle, cleanDescription, priority === 'urgent' ? 'urgent' : priority === 'low' ? 'low' : 'normal', tech?.id || null, String(hours)]);
-  for (const f of req.files || []) await q(`INSERT INTO ticket_files (ticket_id, url) VALUES ($1,$2)`, [t.id, fileUrl(req, f)]);
+  for (const f of req.files || []) await q(`INSERT INTO ticket_files (ticket_id, url) VALUES ($1,$2)`, [t.id, privateFileKey(req, f)]);
   const msg = `Ticket #${t.number} · ${b.unit_no}: ${title}`;
   if (tech) await notify(req.user.org, tech.id, 'ticket', `New complaint assigned to you. ${msg}`, `/tickets/${t.id}`);
   if (sla.notify_sales_agent && b.sold_by) await notify(req.user.org, b.sold_by, 'ticket', `Your customer raised a complaint. ${msg}`, `/tickets/${t.id}`);
@@ -157,7 +161,7 @@ r.patch('/tickets/:id', allow('admin', 'maintenance', 'customer'), h(async (req,
   res.json(row);
 }));
 
-r.post('/tickets/:id/comments', allow('admin', 'maintenance', 'customer', 'sales'), upload.array('photos', 6), verifyUploadedFiles, h(async (req, res) => {
+r.post('/tickets/:id/comments', allow('admin', 'maintenance', 'customer', 'sales'), privateUpload.array('photos', 6), verifyUploadedFiles, h(async (req, res) => {
   uuid(req.params.id, 'Ticket ID');
   const t = await one(`SELECT t.*, b.sold_by FROM tickets t LEFT JOIN bookings b ON b.id = t.booking_id WHERE t.id = $1 AND t.org_id = $2`, [req.params.id, req.user.org]);
   if (!t || (req.user.role === 'customer' && t.customer_id !== req.user.id) || (req.user.role === 'sales' && t.sold_by !== req.user.id)) throw fail(404, 'Ticket not found');
@@ -168,7 +172,7 @@ r.post('/tickets/:id/comments', allow('admin', 'maintenance', 'customer', 'sales
   if (internalValue !== undefined && ![true, false, 'true', 'false'].includes(internalValue)) throw fail(400, 'Internal must be true or false');
   const internal = req.user.role !== 'customer' && (internalValue === true || internalValue === 'true');
   const c = await one(`INSERT INTO ticket_comments (ticket_id, author_id, body, internal) VALUES ($1,$2,$3,$4) RETURNING *`, [t.id, req.user.id, body || '(photo)', internal]);
-  for (const f of req.files || []) await q(`INSERT INTO ticket_files (ticket_id, url) VALUES ($1,$2)`, [t.id, fileUrl(req, f)]);
+  for (const f of req.files || []) await q(`INSERT INTO ticket_files (ticket_id, comment_id, url) VALUES ($1,$2,$3)`, [t.id, c.id, privateFileKey(req, f)]);
   if (req.user.role === 'customer') { if (t.assigned_to) await notify(req.user.org, t.assigned_to, 'ticket', `Customer replied on #${t.number}`, `/tickets/${t.id}`); }
   else if (!internal && t.customer_id) await notify(req.user.org, t.customer_id, 'ticket', `Reply on your ticket #${t.number}`, `/tickets/${t.id}`);
   if (req.user.role !== 'customer' && t.status === 'open') await q(`UPDATE tickets SET status = 'in_progress' WHERE id = $1`, [t.id]);

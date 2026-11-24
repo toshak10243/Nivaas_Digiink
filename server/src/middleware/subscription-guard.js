@@ -13,7 +13,8 @@ export function subscriptionGuard(req, res, next) {
 
   const now = new Date();
   const endsAt = tenant.subscription_ends_at ? new Date(tenant.subscription_ends_at) : null;
-  const isExpired = endsAt ? now > endsAt : false;
+  const hasValidExpiry = endsAt && Number.isFinite(endsAt.getTime());
+  const isExpired = !hasValidExpiry || now >= endsAt;
 
   // Read-only queries (GET) are permitted so builders don't lose view access to their data
   if (req.method === 'GET') {
@@ -21,7 +22,9 @@ export function subscriptionGuard(req, res, next) {
   }
 
   // Mutative actions (POST, PUT, PATCH, DELETE) are locked once subscription expires
-  if (isExpired && tenant.subscription_status !== 'active') {
+  const subscriptionActive = tenant.subscription_status === 'active';
+  const lifetimePlan = tenant.plan_type === 'lifetime';
+  if (!subscriptionActive || (!lifetimePlan && isExpired)) {
     return res.status(402).json({
       error: 'Your subscription or free trial has expired. Please choose a plan and submit renewal proof to continue updating records.',
       code: 'SUBSCRIPTION_EXPIRED',

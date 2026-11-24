@@ -7,11 +7,20 @@ import { h, allow, fail } from '../lib/auth.js';
 import { settingsOf, merge, validateSettings } from '../settings.js';
 import { config } from '../config.js';
 import { maskPhoneRows } from '../lib/privacy.js';
-import { avatarUpload, fileUrl, verifyUploadedFiles } from './projects.js';
+import { avatarUpload, privateFileKey, verifyUploadedFiles } from './projects.js';
+import { privateFileUrl } from './private-files.js';
 import { email as validEmail, phone as validPhone, text, number, oneOf, record, uuid } from '../lib/validate.js';
 
 const r = Router();
 const USER_COLS = 'id, role, name, email, phone, active, profile, last_login, must_change_password, created_at';
+
+function withPrivateAvatar(user, viewer) {
+  if (!user) return user;
+  const profile = { ...(user.profile || {}) };
+  if (profile.avatar_path) profile.avatar_url = privateFileUrl('avatars', user.id, viewer);
+  delete profile.avatar_path;
+  return { ...user, profile };
+}
 
 async function assertOrgUser(id, org, roles) {
   const user = await one(`SELECT id, role, active FROM users WHERE id = $1 AND org_id = $2`, [id, org]);
@@ -23,7 +32,7 @@ r.get('/me', h(async (req, res) => {
   const org = await one(`SELECT id, name, logo_url, phone, email, address, rera_promoter, settings FROM orgs WHERE id = $1`, [req.user.org]);
   org.settings = settingsOf(org);
   const wa = await one(`SELECT id, display FROM wa_numbers WHERE user_id = $1`, [req.user.id]);
-  res.json({ user: { ...user, whatsapp: wa }, org, publicUrl: config.publicUrl });
+  res.json({ user: { ...withPrivateAvatar(user, req.user), whatsapp: wa }, org, publicUrl: config.publicUrl });
 }));
 
 /** Sales agents set their own availability and AI twin. */
@@ -47,16 +56,18 @@ r.patch('/me/profile', h(async (req, res) => {
   if (safeAiTwin) profile.ai_twin = { ...(profile.ai_twin || {}), ...safeAiTwin };
   const row = await one(`UPDATE users SET profile = $2, name = COALESCE($3, name), email = COALESCE($4, email), phone = COALESCE($5, phone) WHERE id = $1 RETURNING ${USER_COLS}`,
     [req.user.id, profile, name || null, email || null, phone || null]);
-  res.json(row);
+  res.json(withPrivateAvatar(row, req.user));
 }));
 
 r.post('/me/avatar', avatarUpload.array('files', 1), verifyUploadedFiles, h(async (req, res) => {
   const file = req.files?.[0];
   if (!file) throw fail(400, 'Choose a profile picture to upload');
   const u = await one(`SELECT profile FROM users WHERE id = $1`, [req.user.id]);
-  const profile = { ...u.profile, avatar_url: fileUrl(req, file) };
+  const profile = { ...u.profile, avatar_path: privateFileKey(req, file) };
+  delete profile.avatar_url;
   const row = await one(`UPDATE users SET profile = $2 WHERE id = $1 RETURNING ${USER_COLS}`, [req.user.id, profile]);
-  res.json({ avatar_url: profile.avatar_url, profile: row.profile });
+  const user = withPrivateAvatar(row, req.user);
+  res.json({ avatar_url: user.profile.avatar_url, profile: user.profile });
 }));
 
 // ---------- Dashboard ----------
@@ -131,7 +142,8 @@ r.get('/team', h(async (req, res) => {
        (SELECT count(*)::int FROM bookings b WHERE (b.sold_by = u.id OR b.broker_id = u.id) AND b.status <> 'cancelled') AS units_sold
      FROM users u LEFT JOIN wa_numbers w ON w.user_id = u.id
      WHERE u.org_id = $1 ${role ? 'AND u.role = $2' : ''} ORDER BY u.role, u.name`, role ? [req.user.org, role] : [req.user.org]);
-  res.json(req.user.role === 'admin' ? rows : rows.map(({ profile, ...u }) => ({ ...u, profile: { availability: profile.availability } })));
+  const visibleRows = req.user.role === 'admin' ? rows : rows.map(({ profile, ...u }) => ({ ...u, profile: { availability: profile.availability } }));
+  res.json(visibleRows.map(user => withPrivateAvatar(user, req.user)));
 }));
 
 r.post('/team', allow('admin'), h(async (req, res) => {
@@ -145,7 +157,7 @@ r.post('/team', allow('admin'), h(async (req, res) => {
   if (typeof temp !== 'string' || temp.length < 8 || temp.length > 1024) throw fail(400, 'Password must be 8 to 1024 characters');
   const u = await one(`INSERT INTO users (org_id, role, name, email, phone, password_hash, profile) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING ${USER_COLS}`,
     [req.user.org, role, cleanName, cleanEmail, cleanPhone || null, await bcrypt.hash(temp, 10), defaultsFor(role, cleanProfile)]);
-  res.json({ ...u, temp_password: temp });
+  res.json({ ...withPrivateAvatar(u, req.user), temp_password: temp });
 }));
 
 r.patch('/team/:id', allow('admin'), h(async (req, res) => {
@@ -161,7 +173,7 @@ r.patch('/team/:id', allow('admin'), h(async (req, res) => {
   const safeProfile = profile === undefined ? cur.profile : merge(cur.profile, validateTeamProfile(cur.role, profile));
   const u = await one(`UPDATE users SET name = COALESCE($2,name), email = COALESCE($3,email), phone = COALESCE($4,phone), active = COALESCE($5,active), profile = $6
                        WHERE id = $1 RETURNING ${USER_COLS}`, [cur.id, cleanName, cleanEmail, cleanPhone, active, safeProfile]);
-  res.json(u);
+  res.json(withPrivateAvatar(u, req.user));
 }));
 
 r.post('/team/:id/reset-password', allow('admin'), h(async (req, res) => {

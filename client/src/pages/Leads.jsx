@@ -229,7 +229,8 @@ function LeadDrawer({ id, me, say, go, sellers, projects, onClose, onChange }) {
       lead: l,
       unit,
       project: proj,
-      clientPhone: l.phone,
+      clientPhone: role === 'broker' ? '' : l.phone,
+      hideDirectNumber: role === 'broker',
       text: `Namaste ${l.name?.split(' ')[0] || ''}! As discussed, here are the details${unit ? ` of flat ${unit.unit_no}` : ''}:`,
     });
     setPick(false);
@@ -248,8 +249,9 @@ function LeadDrawer({ id, me, say, go, sellers, projects, onClose, onChange }) {
   return (
     <Drawer title={l.name || phone(l.phone)} sub={`${SOURCES[l.source] || l.source} · added ${ago(l.created_at)} ago${l.broker ? ` · broker ${l.broker.name}${l.broker.firm ? ' (' + l.broker.firm + ')' : ''}` : ''}`} onClose={onClose} actions={<Pill s={l.temperature} />}>
       <div className="callbar">
-        <a className="btn sun" href={`tel:+${String(l.phone).replace(/\D/g, '')}`}><Icon name="phone" />{phone(l.phone)}</a>
-        <a className="btn wa-btn" href={`https://wa.me/${String(l.phone).replace(/\D/g, '')}`} target="_blank" rel="noreferrer"><Icon name="wa" />WhatsApp Web</a>
+        {role === 'broker'
+          ? <span className="btn" aria-label="Customer phone number masked"><Icon name="phone" />{phone(l.phone)}</span>
+          : <><a className="btn sun" href={`tel:+${String(l.phone).replace(/\D/g, '')}`}><Icon name="phone" />{phone(l.phone)}</a><a className="btn wa-btn" href={`https://wa.me/${String(l.phone).replace(/\D/g, '')}`} target="_blank" rel="noreferrer"><Icon name="wa" />WhatsApp Web</a></>}
         {role !== 'broker' && (
           l.chats?.[0]
             ? <button className="btn" onClick={() => go('chats/' + l.chats[0].id)}><Icon name="chat" />Open In-app Chat</button>
@@ -282,8 +284,7 @@ function LeadDrawer({ id, me, say, go, sellers, projects, onClose, onChange }) {
               {l.followup_note && <span className="muted"> — “{l.followup_note}”</span>}
             </div>
             <div className="followup-actions">
-              <a className="btn sm sun" href={`tel:+${String(l.phone).replace(/\D/g, '')}`}><Icon name="phone" />Call Now</a>
-              <a className="btn sm wa-btn" href={`https://wa.me/${String(l.phone).replace(/\D/g, '')}?text=${encodeURIComponent(`Namaste ${l.name?.split(' ')[0] || ''}! Following up as discussed regarding our property.`)}`} target="_blank" rel="noreferrer"><Icon name="wa" />WhatsApp</a>
+              {role !== 'broker' && <><a className="btn sm sun" href={`tel:+${String(l.phone).replace(/\D/g, '')}`}><Icon name="phone" />Call Now</a><a className="btn sm wa-btn" href={`https://wa.me/${String(l.phone).replace(/\D/g, '')}?text=${encodeURIComponent(`Namaste ${l.name?.split(' ')[0] || ''}! Following up as discussed regarding our property.`)}`} target="_blank" rel="noreferrer"><Icon name="wa" />WhatsApp</a></>}
               <button className="btn sm" onClick={clearFollowup}><Icon name="checkCircle" />Mark Done</button>
             </div>
           </div>

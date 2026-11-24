@@ -20,6 +20,9 @@ export function requireAuth(req, res, next) {
       code: isExpired ? 'SESSION_EXPIRED' : 'AUTH_REQUIRED'
     });
   }
+  if (!claims?.uid || !claims?.org || claims.type === 'refresh') {
+    return res.status(401).json({ error: 'Please log in again', code: 'AUTH_REQUIRED' });
+  }
   one(`SELECT id, org_id, role, name FROM users WHERE id = $1 AND org_id = $2 AND active`, [claims.uid, claims.org])
     .then(user => {
       if (!user) return res.status(401).json({ error: 'Session expired. Please log in again.', code: 'USER_INACTIVE' });

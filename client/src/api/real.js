@@ -14,36 +14,77 @@ let refreshToken = (() => {
     return null;
   }
 })();
+let refreshPromise = null;
 
 const save = (t, r) => {
   token = t;
-  refreshToken = r || refreshToken;
+  refreshToken = t ? (r || refreshToken) : null;
   try {
     if (t) {
       localStorage.setItem('nv_token', t);
-      sessionStorage.setItem('nv_token', t);
       if (r) {
         localStorage.setItem('nv_refresh_token', r);
-        sessionStorage.setItem('nv_refresh_token', r);
       }
+      sessionStorage.removeItem('nv_token');
+      sessionStorage.removeItem('nv_refresh_token');
     } else {
       localStorage.removeItem('nv_token');
-      sessionStorage.removeItem('nv_token');
       localStorage.removeItem('nv_refresh_token');
+      sessionStorage.removeItem('nv_token');
       sessionStorage.removeItem('nv_refresh_token');
     }
   } catch {
-    /* private mode */
+    try {
+      if (t) {
+        sessionStorage.setItem('nv_token', t);
+        if (r) sessionStorage.setItem('nv_refresh_token', r);
+      } else {
+        sessionStorage.removeItem('nv_token');
+        sessionStorage.removeItem('nv_refresh_token');
+      }
+    } catch { /* private mode */ }
   }
 };
 
-async function req(method, path, body) {
+async function send(method, path, body, accessToken = token) {
   const isForm = body instanceof FormData;
-  const res = await fetch(path, {
+  return fetch(path, {
     method,
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body && !isForm ? { 'Content-Type': 'application/json' } : {}) },
+    headers: { ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}), ...(body && !isForm ? { 'Content-Type': 'application/json' } : {}) },
     body: body ? (isForm ? body : JSON.stringify(body)) : undefined,
   });
+}
+
+async function refreshAccessToken() {
+  if (!refreshToken) return null;
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      try {
+        const response = await fetch('/auth/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.token || !data.refreshToken) return null;
+        save(data.token, data.refreshToken);
+        return data.token;
+      } catch {
+        return null;
+      } finally {
+        refreshPromise = null;
+      }
+    })();
+  }
+  return refreshPromise;
+}
+
+async function req(method, path, body) {
+  let res = await send(method, path, body);
+  if (res.status === 401 && path.startsWith('/api') && refreshToken) {
+    const renewedToken = await refreshAccessToken();
+    if (renewedToken) res = await send(method, path, body, renewedToken);
+  }
   if (res.status === 401 && path.startsWith('/api')) {
     save(null);
     try {

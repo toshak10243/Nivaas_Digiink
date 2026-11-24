@@ -9,10 +9,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import bcrypt from 'bcryptjs';
+import { assertDedicatedIntegrationDatabase } from './lib/integration-db.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
-if (!testDatabaseUrl) throw new Error('Set TEST_DATABASE_URL to a PostgreSQL database reserved for integration tests.');
+const testDatabaseName = assertDedicatedIntegrationDatabase(testDatabaseUrl);
 
 let schema;
 let scopedUrl;
@@ -24,8 +25,6 @@ let baseUrl;
 let fixtures;
 let tokens;
 let uploadDir;
-
-function dbNameFrom(url) { return decodeURIComponent(new URL(url).pathname.replace(/^\//, '')); }
 
 async function freePort() {
   const listener = createServer();
@@ -64,7 +63,7 @@ async function api(route, { token, method = 'GET', body, headers = {} } = {}) {
 
 before(async () => {
   if (!testDatabaseUrl) return;
-  const dbName = dbNameFrom(testDatabaseUrl);
+  const dbName = testDatabaseName;
   if (!dbName) throw new Error('TEST_DATABASE_URL must include a database name.');
   schema = `nivaas_it_${process.pid}_${randomBytes(4).toString('hex')}`;
   controlPool = new pg.Pool({ connectionString: testDatabaseUrl, max: 1 });
@@ -114,7 +113,7 @@ before(async () => {
     [project.id],
   )).rows[0];
   const units = {};
-  for (const unitNo of ['T-101', 'T-102']) {
+  for (const unitNo of ['T-101', 'T-102', 'T-103']) {
     units[unitNo] = (await fixturePool.query(
       `INSERT INTO units (project_id,unit_type_id,unit_no,floor) VALUES ($1,$2,$3,1) RETURNING id`,
       [project.id, type.id, unitNo],
@@ -274,6 +273,75 @@ test('API regression flows: authorization, privacy, booking, payments, tickets, 
   assert.deepEqual(salesLeads.data.map(x => x.id), [fixtures.leads.salesOne]);
   const brokerLeads = await api('/api/leads', { token: tokens.brokerOne });
   assert.deepEqual(brokerLeads.data.map(x => x.id), [fixtures.leads.brokerOne]);
+  assert.equal(brokerLeads.data[0].phone, '••••••0003');
+  assert.equal((await api(`/api/leads/${fixtures.leads.brokerOne}`, { token: tokens.brokerOne })).data.phone, '••••••0003');
+  const leadsBeforeInvalidInput = Number((await fixturePool.query('SELECT count(*) FROM leads WHERE org_id = $1', [fixtures.org.id])).rows[0].count);
+  for (const invalidLead of [
+    { name: 'Malformed Phone', phone: 'Call me at 919910000099' },
+    { name: 'Malformed Email', phone: '919910000098', email: 'not-an-email' },
+    { name: 'Unknown Source', phone: '919910000097', source: 'untrusted_source' },
+    { name: 'Unknown Field', phone: '919910000096', make_admin: true },
+  ]) {
+    const rejected = await api('/api/leads', { token: tokens.admin, method: 'POST', body: invalidLead });
+    assert.equal(rejected.response.status, 400);
+  }
+  assert.equal(Number((await fixturePool.query('SELECT count(*) FROM leads WHERE org_id = $1', [fixtures.org.id])).rows[0].count), leadsBeforeInvalidInput);
+  const ignoredLeadField = await api(`/api/leads/${fixtures.leads.salesOne}`, {
+    token: tokens.salesOne, method: 'PATCH', body: { make_admin: true },
+  });
+  assert.equal(ignoredLeadField.response.status, 400);
+  const brokerCreatedLead = await api('/api/leads', {
+    token: tokens.brokerOne, method: 'POST', body: { name: 'Broker Privacy Check', phone: '919910000099' },
+  });
+  assert.equal(brokerCreatedLead.response.status, 200);
+  assert.equal(brokerCreatedLead.data.phone, '••••••0099');
+  assert.equal((await fixturePool.query('SELECT phone FROM leads WHERE id = $1', [brokerCreatedLead.data.id])).rows[0].phone, '919910000099');
+
+  const brokerVisit = (await fixturePool.query(
+    `INSERT INTO site_visits (org_id,lead_id,project_id,agent_id,scheduled_at) VALUES ($1,$2,$3,$4,now() + interval '1 day') RETURNING id`,
+    [fixtures.org.id, fixtures.leads.brokerOne, fixtures.project.id, fixtures.users.brokerOne.id],
+  )).rows[0];
+  const pastVisit = await api('/api/visits', {
+    token: tokens.admin, method: 'POST', body: { lead_id: fixtures.leads.brokerOne, scheduled_at: '2020-01-02T10:00:00Z' },
+  });
+  assert.equal(pastVisit.response.status, 400);
+  const unauthorizedVisitUpdate = await api(`/api/visits/${brokerVisit.id}`, {
+    token: tokens.brokerTwo, method: 'PATCH', body: { status: 'confirmed' },
+  });
+  assert.equal(unauthorizedVisitUpdate.response.status, 404);
+  const pastReschedule = await api(`/api/visits/${brokerVisit.id}`, {
+    token: tokens.brokerOne, method: 'PATCH', body: { status: 'rescheduled', reschedule_at: '2020-01-02T10:00:00Z' },
+  });
+  assert.equal(pastReschedule.response.status, 400);
+  const futureVisitTime = new Date(Date.now() + 2 * 86400000).toISOString();
+  const rescheduledVisit = await api(`/api/visits/${brokerVisit.id}`, {
+    token: tokens.brokerOne, method: 'PATCH', body: { status: 'rescheduled', reschedule_at: futureVisitTime },
+  });
+  assert.equal(rescheduledVisit.response.status, 200);
+  assert.equal(rescheduledVisit.data.status, 'scheduled');
+  assert.equal(new Date(rescheduledVisit.data.scheduled_at).toISOString(), futureVisitTime);
+  const confirmedVisit = await api(`/api/visits/${brokerVisit.id}`, {
+    token: tokens.brokerOne, method: 'PATCH', body: { status: 'confirmed' },
+  });
+  assert.equal(confirmedVisit.response.status, 200);
+  const reopenedVisit = await api(`/api/visits/${brokerVisit.id}`, {
+    token: tokens.brokerOne, method: 'PATCH', body: { status: 'scheduled' },
+  });
+  assert.equal(reopenedVisit.response.status, 409);
+  const brokerVisits = await api('/api/visits', { token: tokens.brokerOne });
+  assert.equal(brokerVisits.data.find(v => v.id === brokerVisit.id).phone, '••••••0003');
+  const brokerDashboard = await api('/api/dashboard', { token: tokens.brokerOne });
+  assert.equal(brokerDashboard.data.visits.find(v => v.id === brokerVisit.id).phone, '••••••0003');
+
+  await fixturePool.query('UPDATE users SET phone = $2 WHERE id = $1', [fixtures.users.customerOne.id, '919920000009']);
+  const brokerBooking = (await fixturePool.query(
+    `INSERT INTO bookings (org_id,unit_id,customer_id,sold_by,broker_id,deal_value,status) VALUES ($1,$2,$3,$4,$5,100000,'cancelled') RETURNING id`,
+    [fixtures.org.id, fixtures.units['T-103'], fixtures.users.customerOne.id, fixtures.users.salesOne.id, fixtures.users.brokerOne.id],
+  )).rows[0];
+  const brokerBookings = await api('/api/bookings', { token: tokens.brokerOne });
+  assert.equal(brokerBookings.data.find(b => b.id === brokerBooking.id).customer_phone, '••••••0009');
+  const brokerBookingDetail = await api(`/api/bookings/${brokerBooking.id}`, { token: tokens.brokerOne });
+  assert.equal(brokerBookingDetail.data.customer_phone, '••••••0009');
 
   const fallbackDraft = await api(`/api/leads/${fixtures.leads.salesOne}/ai-objection`, {
     token: tokens.salesOne, method: 'POST', body: { objection: 'What is the confirmed possession date?' },
@@ -305,6 +373,10 @@ test('API regression flows: authorization, privacy, booking, payments, tickets, 
     token: tokens.admin, method: 'PATCH', body: { status: 'possession' },
   });
   assert.equal(skippedBookingStatus.response.status, 409);
+  const emptyBookingStatus = await api(`/api/bookings/${booking.id}`, {
+    token: tokens.admin, method: 'PATCH', body: { status: '' },
+  });
+  assert.equal(emptyBookingStatus.response.status, 400);
   const bookingBeforeInvalidChecklist = await fixturePool.query('SELECT status, registry_checklist FROM bookings WHERE id = $1', [booking.id]);
   const invalidRegistryChecklist = await api(`/api/bookings/${booking.id}`, {
     token: tokens.admin, method: 'PATCH', body: { registry_checklist: { stamp_duty_paid: 'yes' } },
@@ -312,6 +384,16 @@ test('API regression flows: authorization, privacy, booking, payments, tickets, 
   assert.equal(invalidRegistryChecklist.response.status, 400);
   const unchangedBooking = await fixturePool.query('SELECT status, registry_checklist FROM bookings WHERE id = $1', [booking.id]);
   assert.deepEqual(unchangedBooking.rows[0], bookingBeforeInvalidChecklist.rows[0]);
+
+  for (const status of ['agreement', 'registered', 'possession']) {
+    const transition = await api(`/api/bookings/${booking.id}`, { token: tokens.admin, method: 'PATCH', body: { status } });
+    assert.equal(transition.response.status, 200, `Expected booking transition to ${status}: ${JSON.stringify(transition.data)}`);
+  }
+  const backwardsBookingStatus = await api(`/api/bookings/${booking.id}`, {
+    token: tokens.admin, method: 'PATCH', body: { status: 'agreement' },
+  });
+  assert.equal(backwardsBookingStatus.response.status, 409);
+  assert.equal((await fixturePool.query('SELECT status FROM bookings WHERE id = $1', [booking.id])).rows[0].status, 'possession');
 
   const overpayment = await api(`/api/bookings/${booking.id}/payments`, {
     token: tokens.admin, method: 'POST', body: { amount: Number(booking.deal_value) + 1, mode: 'UPI' },

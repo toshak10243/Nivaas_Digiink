@@ -29,25 +29,34 @@ export function clearTenantCache(slug) {
   else tenantCache.clear();
 }
 
+const normalizeHost = value => String(value || '').trim().toLowerCase().replace(/\.$/, '').split(':')[0];
+const validTenantSlug = value => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value);
+
+export function getTenantIdentifier(req, baseDomain = config.baseDomain) {
+  const host = normalizeHost(req.headers?.['x-forwarded-host'] || req.headers?.host);
+  const normalizedBaseDomain = normalizeHost(baseDomain);
+  if (host && host.endsWith(`.${normalizedBaseDomain}`)) {
+    return { slug: host.slice(0, -(normalizedBaseDomain.length + 1)), source: 'host' };
+  }
+  if (req.headers?.['x-tenant-slug'] !== undefined) {
+    return { slug: String(req.headers['x-tenant-slug']).trim().toLowerCase(), source: 'header' };
+  }
+  if (req.query?._tenant !== undefined) {
+    return { slug: String(req.query._tenant).trim().toLowerCase(), source: 'query' };
+  }
+  // Custom domains are looked up by their full host name.
+  if (host && host !== normalizedBaseDomain && !['localhost', '127.0.0.1'].includes(host)) {
+    return { slug: host, source: 'custom-domain' };
+  }
+  return { slug: null, source: null };
+}
+
 /**
  * Express middleware that identifies tenant from Host header or X-Tenant-Slug,
  * sets req.tenant, and wraps the request chain in AsyncLocalStorage runWithTenant().
  */
 export async function tenantResolver(req, res, next) {
-  const host = (req.headers['x-forwarded-host'] || req.headers.host || '').toLowerCase().split(':')[0];
-  let slug = null;
-
-  // 1. Check if host is a subdomain of baseDomain (e.g. apex.nivaas.space)
-  const baseDomain = config.baseDomain.toLowerCase();
-  if (host.endsWith('.' + baseDomain)) {
-    slug = host.slice(0, -(baseDomain.length + 1));
-  } else if (req.headers['x-tenant-slug']) {
-    // 2. Fallback to explicit header for API clients / testing
-    slug = String(req.headers['x-tenant-slug']).trim().toLowerCase();
-  } else if (req.query?._tenant) {
-    // 3. Fallback to query param
-    slug = String(req.query._tenant).trim().toLowerCase();
-  }
+  const { slug, source } = getTenantIdentifier(req);
 
   // If host is the superadmin subdomain (e.g. admin.nivaas.space)
   if (slug === 'admin') {
@@ -57,11 +66,17 @@ export async function tenantResolver(req, res, next) {
 
   let tenant = null;
   if (slug && slug !== 'www') {
+    const isCustomDomain = source === 'custom-domain';
+    if ((!isCustomDomain && !validTenantSlug(slug)) || (isCustomDomain && !/^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(slug))) {
+      return res.status(400).json({ error: 'Invalid tenant identifier' });
+    }
     try {
       tenant = await lookupTenantBySlug(slug);
     } catch (err) {
       console.error('[tenant-resolver] Failed to lookup tenant:', err.message);
+      return res.status(503).json({ error: 'Tenant lookup is temporarily unavailable' });
     }
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
   }
 
   // If no specific tenant found, fallback to default tenant (sgdevelopers -> nivaas)
@@ -71,7 +86,11 @@ export async function tenantResolver(req, res, next) {
       id: '8480a397-fb89-44d7-abc0-df9823c95c10',
       name: 'Shree Ganesh Developers',
       slug: 'sgdevelopers',
-      db_name: 'nivaas',
+      // Integration tests point DATABASE_URL at a temporary database/schema.
+      // Keep their HTTP requests on that database instead of the local default.
+      db_name: process.env.NODE_ENV === 'test'
+        ? decodeURIComponent(new URL(config.databaseUrl).pathname.replace(/^\//, ''))
+        : 'nivaas',
       plan_type: 'yearly',
       subscription_status: 'active',
       subscription_ends_at: new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString(),

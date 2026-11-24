@@ -15,6 +15,7 @@ import pub from './routes/public.js';
 import webhooks from './routes/webhooks.js';
 import billing from './routes/billing.js';
 import superadmin from './routes/superadmin.js';
+import privateFiles from './routes/private-files.js';
 import { tenantResolver } from './middleware/tenant-resolver.js';
 import { subscriptionGuard } from './middleware/subscription-guard.js';
 import { startJobs } from './services/jobs.js';
@@ -31,6 +32,9 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: '2mb', verify: (req, _r, buf) => { req.rawBody = buf; } }));
 
+// Resolve tenant context before routes that read or write tenant data.
+app.use(tenantResolver);
+
 // uploaded photos / videos (and the bundled sample media)
 const uploadHeaders = (res, _filePath) => {
   // Uploaded files are user supplied, so even if one slips through validation
@@ -39,12 +43,10 @@ const uploadHeaders = (res, _filePath) => {
   res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
   res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
 };
+app.use('/uploads/private', (_req, res) => res.sendStatus(404));
+app.use('/private-files', privateFiles);
 app.use('/uploads', express.static(config.uploadDir, { maxAge: '7d', fallthrough: true, setHeaders: uploadHeaders }));
-app.use('/uploads', express.static(path.join(config.uploadDir, 'private'), { maxAge: '7d', fallthrough: true, setHeaders: uploadHeaders }));
 app.use('/uploads/sample', express.static(path.join(dir, '../uploads/sample'), { maxAge: '7d', setHeaders: uploadHeaders }));
-
-// Resolve tenant and route DB queries dynamically to tenant database
-app.use(tenantResolver);
 
 app.use('/auth', auth);
 app.use('/webhooks', webhooks);

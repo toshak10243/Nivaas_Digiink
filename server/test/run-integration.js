@@ -1,7 +1,10 @@
 import { spawnSync } from 'node:child_process';
+import { assertDedicatedIntegrationDatabase } from './lib/integration-db.js';
 
-if (!process.env.TEST_DATABASE_URL) {
-  console.error('Set TEST_DATABASE_URL to a dedicated PostgreSQL database before running integration tests.');
+try {
+  assertDedicatedIntegrationDatabase(process.env.TEST_DATABASE_URL);
+} catch (error) {
+  console.error(error.message);
   process.exit(2);
 }
 

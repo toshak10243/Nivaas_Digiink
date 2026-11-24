@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS users (
   --  maintenance: {skills:[...]}
   profile       jsonb NOT NULL DEFAULT '{}',
   last_login    timestamptz,
+  must_change_password boolean NOT NULL DEFAULT false,
   created_at    timestamptz NOT NULL DEFAULT now(),
   UNIQUE (org_id, email)
 );
@@ -230,6 +231,7 @@ CREATE TABLE IF NOT EXISTS bookings (
   handover_docs  jsonb NOT NULL DEFAULT '{}'::jsonb,
   registry_checklist jsonb NOT NULL DEFAULT '{"pan_verified":false,"aadhar_verified":false,"form_26qb_tds":false,"bank_noc":false,"signatory_assigned":false,"status":"pending"}'::jsonb,
   notes          text,
+  updated_at     timestamptz NOT NULL DEFAULT now(),
   created_at     timestamptz NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS bookings_unit_live ON bookings(unit_id) WHERE status <> 'cancelled';

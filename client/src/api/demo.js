@@ -31,7 +31,7 @@ for (const p of S.projects) {
     highlights: p.highlights, cover_url: media(p.cover), brochure_url: null, sales_pool: p.sales_pool, created_at: S.ago(400) });
   for (const t of p.types) { types.push({ ...t, project_id: p.id, floorplan_url: media(t.floorplan) }); mediaRows.push({ id: nid('m'), project_id: p.id, unit_type_id: t.id, kind: 'floorplan', url: media(t.floorplan), title: `${t.name} floor plan`, sort: 50 }); }
   for (const tw of p.towers) towers.push({ id: p.id + ':T' + tw.name, project_id: p.id, name: tw.name, floors: tw.floors });
-  p.media.forEach(([kind, f, title, typeId], i) => mediaRows.push({ id: nid('m'), project_id: p.id, unit_type_id: typeId || null, kind, url: media(f), title, sort: i }));
+  p.media.forEach(([kind, f, title], i) => mediaRows.push({ id: nid('m'), project_id: p.id, kind, url: media(f), title, sort: i }));
   for (const x of p.updates) updates.push({ id: nid('up'), project_id: p.id, title: x.title, body: x.body, created_at: S.ago(x.days) });
 }
 for (const u of S.units) units.push({ id: u.id, project_id: u.project, tower_id: u.project + ':T' + u.tower, unit_type_id: u.type, unit_no: u.unit_no, floor: u.floor, facing: u.facing,
@@ -204,8 +204,7 @@ const on = (method, pattern, fn) => routes.push({ method, re: new RegExp('^' + p
 const need = (...roles) => { if (!roles.includes(me.role)) throw err(403, 'You do not have access to this'); };
 
 on('GET', '/api/me', () => ({ user: { ...clone(me), whatsapp: waNumbers.find(w => w.user_id === me.id) || null }, org: clone({ ...org, bridge_secret: undefined }), publicUrl: location.origin }));
-on('PATCH', '/api/me/profile', (_, b) => { if (b.name !== undefined) me.name = b.name.trim(); if (b.email !== undefined) me.email = b.email.trim().toLowerCase(); if (b.phone !== undefined) me.phone = b.phone.trim(); if (b.availability) me.profile.availability = b.availability; if (b.ai_twin) me.profile.ai_twin = { ...me.profile.ai_twin, ...b.ai_twin }; return clone(me); });
-on('POST', '/api/me/avatar', (_, b) => { const file = b.getAll?.('files')?.[0]; if (!file || !file.type.startsWith('image/') || file.size > 5 * 1024 * 1024) throw err(400, 'Choose a JPG, PNG, or WebP image up to 5 MB'); me.profile.avatar_url = URL.createObjectURL(file); return { avatar_url: me.profile.avatar_url, profile: clone(me.profile) }; });
+on('PATCH', '/api/me/profile', (_, b) => { if (b.availability) me.profile.availability = b.availability; if (b.ai_twin) me.profile.ai_twin = { ...me.profile.ai_twin, ...b.ai_twin }; return clone(me); });
 
 on('GET', '/api/dashboard', () => {
   const month = new Date().toISOString().slice(0, 7);
@@ -275,7 +274,7 @@ const projectFull = id => { const p = P(id); if (!p) throw err(404, 'Project not
 on('GET', '/api/projects', () => { need('admin', 'sales', 'broker'); return clone(projects.map(p => { const us = units.filter(u => u.project_id === p.id); const ts = types.filter(t => t.project_id === p.id);
   return { ...p, total: us.length, available: us.filter(u => u.status === 'available').length, sold: us.filter(u => ['booked', 'sold'].includes(u.status)).length, from_price: Math.min(...ts.map(t => t.super_sqft * p.rate_sqft)), bhks: [...new Set(ts.map(t => t.bhk))].join(', ') }; })); });
 on('GET', '/api/projects/:id', p => { need('admin', 'sales', 'broker'); return projectFull(p.id); });
-on('POST', '/api/projects', (_, b) => { need('admin'); if (!b.name) throw err(400, 'Project name is required'); const p = { id: nid('p'), org_id: 'org', name: b.name, city: b.city || 'Jaipur', rate_sqft: Number(b.rate_sqft) || 0, status: 'pre_launch', charges: { parking: 300000, club: 150000, maintenance_deposit: 75000, registry_pct: 7.5, stamp_pct: 6, registration: 30000 }, payment_plan: S.projects[0].payment_plan, amenities: [], highlights: [], sales_pool: [], created_at: now() }; projects.push(p); return projectFull(p.id); });
+on('POST', '/api/projects', (_, b) => { need('admin'); if (!b.name) throw err(400, 'Project name is required'); const p = { id: nid('p'), org_id: 'org', name: b.name, city: b.city || 'Jaipur', rate_sqft: Number(b.rate_sqft) || 0, status: 'pre_launch', charges: { parking: 300000, club: 150000, maintenance_deposit: 75000, gst_pct: 5, stamp_pct: 6, registration: 30000 }, payment_plan: S.projects[0].payment_plan, amenities: [], highlights: [], sales_pool: [], created_at: now() }; projects.push(p); return projectFull(p.id); });
 on('PUT', '/api/projects/:id', (p, b) => { need('admin'); Object.assign(P(p.id), b); return projectFull(p.id); });
 on('POST', '/api/projects/:id/unit-types', (p, b) => { need('admin'); const t = { id: nid('t'), project_id: p.id, bathrooms: 2, balconies: 1, ...b }; types.push(t); return t; });
 on('PUT', '/api/unit-types/:id', (p, b) => { need('admin'); const t = T(p.id); Object.assign(t, b); return t; });
@@ -289,7 +288,7 @@ on('POST', '/api/projects/:id/towers', (p, b) => {
   }
   return tw;
 });
-on('POST', '/api/projects/:id/media', (p, b) => { need('admin'); const out = []; for (const f of b.getAll ? b.getAll('files') : []) { const kind = f.type.startsWith('video') ? 'video' : f.type === 'application/pdf' ? 'brochure' : (b.get('kind') === 'floorplan' ? 'floorplan' : 'image'); const m = { id: nid('m'), project_id: p.id, unit_type_id: b.get('unit_type_id') || null, kind, url: URL.createObjectURL(f), title: b.get('title') || f.name.replace(/\.[^.]+$/, ''), sort: 99 }; mediaRows.push(m); if (kind === 'floorplan') { const type = T(m.unit_type_id); if (type) type.floorplan_url = m.url; } out.push(m); } return out; });
+on('POST', '/api/projects/:id/media', (p, b) => { need('admin'); const out = []; for (const f of b.getAll ? b.getAll('files') : []) { const m = { id: nid('m'), project_id: p.id, kind: f.type.startsWith('video') ? 'video' : f.type === 'application/pdf' ? 'brochure' : (b.get('kind') === 'floorplan' ? 'floorplan' : 'image'), url: URL.createObjectURL(f), title: b.get('title') || f.name.replace(/\.[^.]+$/, ''), sort: 99 }; mediaRows.push(m); out.push(m); } return out; });
 on('DELETE', '/api/media/:id', p => { const i = mediaRows.findIndex(m => m.id === p.id); if (i >= 0) mediaRows.splice(i, 1); return null; });
 on('POST', '/api/projects/:id/updates', (p, b) => {
   need('admin', 'sales');
@@ -353,9 +352,15 @@ on('PATCH', '/api/leads/:id', (p, b) => {
   for (const k of ['name', 'email', 'budget', 'config_pref', 'purpose', 'timeline', 'notes', 'stage', 'temperature', 'project_id', 'unit_id', 'lost_reason', 'followup_at', 'followup_type', 'followup_note']) if (b[k] !== undefined) l[k] = b[k];
   if (l.assigned_to === me.id && !l.first_touch_at) l.first_touch_at = now();
   l.updated_at = now();
+  if (b.stage && b.stage !== old) log(l.id, me.id, 'stage', `Stage: ${old.replace('_', ' ')} → ${b.stage.replace('_', ' ')}${b.lost_reason ? ` (${b.lost_reason})` : ''}`);
   if (b.stage && b.stage !== old) log(l.id, me.id, 'stage', `Stage: ${old.replace('_', ' ')} â†’ ${b.stage.replace('_', ' ')}${b.lost_reason ? ` (${b.lost_reason})` : ''}`);
   if (b.followup_at) log(l.id, me.id, 'note', `Scheduled follow-up for ${new Date(b.followup_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })} (${b.followup_type || 'call'})`);
   return clone(l);
+});
+on('DELETE', '/api/leads/:id', p => {
+  const idx = leads.findIndex(x => x.id === p.id);
+  if (idx !== -1) leads.splice(idx, 1);
+  return null;
 });
 on('POST', '/api/leads/:id/assign', (p, b) => { need('admin'); return clone(assign(leads.find(l => l.id === p.id), b.user_id || null, me.id, b.user_id ? 'manual' : 'auto')); });
 on('POST', '/api/leads/:id/events', (p, b) => { if (!b.body) throw err(400, 'Write something'); log(p.id, me.id, b.kind === 'call' ? 'call' : 'note', b.body); const l = leads.find(x => x.id === p.id); if (b.kind === 'call') { l.first_touch_at ||= now(); if (l.stage === 'new') l.stage = 'contacted'; } return null; });
