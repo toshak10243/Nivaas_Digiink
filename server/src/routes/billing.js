@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import { masterDb } from '../lib/tenant-db.js';
 import { config } from '../config.js';
 import { clearTenantCache } from '../middleware/tenant-resolver.js';
+import { isPaymentSettingsReady, paymentMethodsFromSettings } from '../lib/payment-settings.js';
 
 const r = Router();
 
@@ -56,22 +57,6 @@ export const PLANS = [
   },
 ];
 
-export const PAYMENT_METHODS = {
-  upi: {
-    upiId: process.env.PAYMENT_UPI_ID || 'nivaas@icici',
-    payeeName: 'Nivaas Solutions',
-    qrCodeUrl: '/assets/payment-qr.png',
-  },
-  bank: {
-    accountName: 'Nivaas Solutions Private Limited',
-    bankName: 'HDFC Bank',
-    accountNumber: '50200084729182',
-    ifscCode: 'HDFC0000123',
-    accountType: 'Current Account',
-    branch: 'Jaipur Main Branch',
-  },
-};
-
 // Payment screenshot storage
 const proofUploadDir = path.join(config.uploadDir, 'payment-proofs');
 fs.mkdirSync(proofUploadDir, { recursive: true });
@@ -117,6 +102,8 @@ r.get('/status', async (req, res) => {
     `SELECT * FROM subscription_payments WHERE tenant_id = $1 AND status = 'pending' ORDER BY created_at DESC LIMIT 1`,
     [t.id]
   );
+  const platformSettings = await masterDb.one(`SELECT value FROM platform_settings WHERE key = 'bank_upi'`);
+  const paymentMethods = paymentMethodsFromSettings(platformSettings?.value);
 
   res.json({
     tenant_name: t.name,
@@ -128,12 +115,24 @@ r.get('/status', async (req, res) => {
     is_expired: isExpired,
     days_left: daysLeft,
     pending_payment: pendingPayment || null,
-    payment_methods: PAYMENT_METHODS,
+    payment_methods: paymentMethods,
+    payment_configuration_required: !paymentMethods,
   });
 });
 
+const requireVerifiedPaymentDetails = (req, res, next) => {
+  masterDb.one(`SELECT value FROM platform_settings WHERE key = 'bank_upi'`)
+    .then(row => {
+      if (!isPaymentSettingsReady(row?.value)) {
+        return res.status(503).json({ error: 'Subscription payment details are not configured and verified yet.' });
+      }
+      next();
+    })
+    .catch(next);
+};
+
 // POST /api/billing/submit-proof
-r.post('/submit-proof', uploadProof.single('screenshot'), async (req, res) => {
+r.post('/submit-proof', requireVerifiedPaymentDetails, uploadProof.single('screenshot'), async (req, res) => {
   const tenant = req.tenant;
   if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
 

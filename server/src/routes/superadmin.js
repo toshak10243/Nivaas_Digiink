@@ -8,6 +8,7 @@ import { provisionTenant } from '../services/tenant-provisioner.js';
 import { sendPaymentApprovedEmail } from '../services/mailer.js';
 import { config } from '../config.js';
 import { h, fail } from '../lib/auth.js';
+import { validatePaymentSettings } from '../lib/payment-settings.js';
 
 const r = Router();
 
@@ -517,7 +518,7 @@ r.get('/settings', requireSuperAdmin, h(async (req, res) => {
  * Updates master platform settings (UPI ID, bank account, support contact)
  */
 r.put('/settings', requireSuperAdmin, h(async (req, res) => {
-  const settings = req.body || {};
+  const settings = validatePaymentSettings(req.body || {});
   await masterDb.q(
     `INSERT INTO platform_settings (key, value, updated_at)
      VALUES ('bank_upi', $1, NOW())

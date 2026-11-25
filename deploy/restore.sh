@@ -10,8 +10,14 @@ fi
 BACKUP_DIR=${BACKUP_DIR:-/opt/backups}
 DB_BACKUP="$BACKUP_DIR/nivaas-$1.sql.gz"
 UPLOAD_BACKUP="$BACKUP_DIR/nivaas-uploads-$1.tar.gz"
+MANIFEST="$BACKUP_DIR/nivaas-$1.sha256"
 [[ -s "$DB_BACKUP" ]] || { echo "Missing database backup: $DB_BACKUP" >&2; exit 1; }
 [[ -s "$UPLOAD_BACKUP" ]] || { echo "Missing uploads backup: $UPLOAD_BACKUP" >&2; exit 1; }
+if [[ -s "$MANIFEST" ]]; then
+  (cd "$BACKUP_DIR" && sha256sum --check --strict "$(basename "$MANIFEST")")
+else
+  echo "Warning: no checksum manifest exists; this is a legacy backup. Archive integrity will be checked only." >&2
+fi
 gzip -t "$DB_BACKUP"
 gzip -t "$UPLOAD_BACKUP"
 if ! tar -tzf "$UPLOAD_BACKUP" | awk '/(^\/|(^|\/)\.\.(\/|$))/ { bad=1 } END { exit bad }'; then

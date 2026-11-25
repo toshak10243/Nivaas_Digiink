@@ -7,6 +7,10 @@ import { inbound } from '../services/twin.js';
 
 const r = Router();
 
+r.use('/whatsapp', (_req, res, next) => config.meta.whatsappWebhookEnabled
+  ? next()
+  : res.sendStatus(404));
+
 r.get('/whatsapp', (req, res) =>
   req.query['hub.mode'] === 'subscribe' && req.query['hub.verify_token'] === config.meta.verifyToken
     ? res.send(req.query['hub.challenge']) : res.sendStatus(403));

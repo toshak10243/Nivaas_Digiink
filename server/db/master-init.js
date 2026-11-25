@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
 import { config } from '../src/config.js';
+import { initialSuperAdminCredentials } from '../src/lib/superadmin-bootstrap.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -50,15 +51,25 @@ export async function initMasterDb() {
     console.log('[master-db] Master schema tables verified & applied.');
 
     // 4. Seed default Super Admin for admin.nivaas.space
-    const existingAdmin = await masterClient.query(`SELECT id FROM super_admins WHERE email = 'admin@nivaas.space'`);
-    if (existingAdmin.rows.length === 0) {
-      const hash = await bcrypt.hash('Admin@123', 10);
-      await masterClient.query(
-        `INSERT INTO super_admins (name, email, password_hash, role)
-         VALUES ($1, $2, $3, $4)`,
-        ['Super Administrator', 'admin@nivaas.space', hash, 'superadmin']
-      );
-      console.log('[master-db] Seeded initial Super Admin (admin@nivaas.space / Admin@123).');
+    const legacyAdmin = await masterClient.query(`SELECT id FROM super_admins WHERE lower(email) = 'admin@nivaas.space' LIMIT 1`);
+    const anyAdmin = legacyAdmin.rows.length ? legacyAdmin : await masterClient.query(`SELECT id FROM super_admins LIMIT 1`);
+    if (legacyAdmin.rows.length || anyAdmin.rows.length === 0) {
+      const initialAdmin = initialSuperAdminCredentials();
+      const hash = await bcrypt.hash(initialAdmin.password, 10);
+      if (legacyAdmin.rows.length) {
+        await masterClient.query(
+          `UPDATE super_admins SET name = $2, email = $3, password_hash = $4, updated_at = now() WHERE id = $1`,
+          [legacyAdmin.rows[0].id, initialAdmin.name, initialAdmin.email, hash]
+        );
+        console.log(`[master-db] Replaced the legacy bootstrap Super Admin with ${initialAdmin.email}. Remove SUPERADMIN_INITIAL_PASSWORD from the environment now.`);
+      } else {
+        await masterClient.query(
+          `INSERT INTO super_admins (name, email, password_hash, role)
+           VALUES ($1, $2, $3, $4)`,
+          [initialAdmin.name, initialAdmin.email, hash, 'superadmin']
+        );
+        console.log(`[master-db] Created initial Super Admin (${initialAdmin.email}). Remove SUPERADMIN_INITIAL_PASSWORD from the environment now.`);
+      }
     }
 
     // 5. Seed default Indian SaaS Plans (Starter, Professional, Business, Enterprise)
@@ -156,13 +167,14 @@ export async function initMasterDb() {
         [
           'bank_upi',
           JSON.stringify({
-            upi_id: 'nivaas@icici',
-            bank_name: 'ICICI Bank Ltd',
-            account_name: 'Nivaas Real Estate Technologies Pvt Ltd',
-            account_number: '50200088991122',
-            ifsc_code: 'ICIC0001234',
-            support_phone: '+91 98290 12345',
-            support_email: 'support@nivaas.space',
+            upi_id: '',
+            bank_name: '',
+            account_name: '',
+            account_number: '',
+            ifsc_code: '',
+            support_phone: '',
+            support_email: '',
+            payment_details_verified: false,
           })
         ]
       );

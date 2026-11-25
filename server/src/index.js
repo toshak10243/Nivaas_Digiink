@@ -84,11 +84,15 @@ if (fs.existsSync(dist)) {
 }
 
 try {
+  fs.mkdirSync(config.uploadDir, { recursive: true });
+  const uploadProbe = path.join(config.uploadDir, `.write-check-${randomUUID()}`);
+  fs.writeFileSync(uploadProbe, 'ok', { flag: 'wx' });
+  fs.unlinkSync(uploadProbe);
   await ensureDatabaseSchema();
   await runMigrations();
   console.log('Database migrations applied.');
 } catch (err) {
-  console.error(`[startup] Database initialization or migrations failed. API was not started: ${err.message}`);
+  console.error(`[startup] Storage/database initialization failed. API was not started: ${err.message}`);
   process.exit(1);
 }
 

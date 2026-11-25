@@ -2376,13 +2376,14 @@ function EditPlanModal({ plan, onClose, onSave }) {
    SUB-PAGE: PLATFORM SETTINGS
    ========================================================================== */
 function SettingsPage({ settings, onSave }) {
-  const [upiId, setUpiId] = useState(settings.upi_id || 'nivaas@icici');
-  const [bankName, setBankName] = useState(settings.bank_name || 'ICICI Bank Ltd');
-  const [accountName, setAccountName] = useState(settings.account_name || 'Nivaas Real Estate Technologies Pvt Ltd');
-  const [accountNumber, setAccountNumber] = useState(settings.account_number || '50200088991122');
-  const [ifscCode, setIfscCode] = useState(settings.ifsc_code || 'ICIC0001234');
-  const [supportPhone, setSupportPhone] = useState(settings.support_phone || '+91 98290 12345');
-  const [supportEmail, setSupportEmail] = useState(settings.support_email || 'support@nivaas.space');
+  const [upiId, setUpiId] = useState(settings.upi_id || '');
+  const [bankName, setBankName] = useState(settings.bank_name || '');
+  const [accountName, setAccountName] = useState(settings.account_name || '');
+  const [accountNumber, setAccountNumber] = useState(settings.account_number || '');
+  const [ifscCode, setIfscCode] = useState(settings.ifsc_code || '');
+  const [supportPhone, setSupportPhone] = useState(settings.support_phone || '');
+  const [supportEmail, setSupportEmail] = useState(settings.support_email || '');
+  const [paymentDetailsVerified, setPaymentDetailsVerified] = useState(settings.payment_details_verified === true);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -2394,6 +2395,7 @@ function SettingsPage({ settings, onSave }) {
       ifsc_code: ifscCode,
       support_phone: supportPhone,
       support_email: supportEmail,
+      payment_details_verified: paymentDetailsVerified,
     });
   };
 
@@ -2404,7 +2406,7 @@ function SettingsPage({ settings, onSave }) {
           Platform &amp; Payment Settings
         </h2>
         <div style={{ color: '#5F6368', fontSize: 14 }}>
-          Bank transfer wire info and support details displayed on the tenant paywall
+          Verified UPI and bank destinations displayed to tenants on the subscription paywall
         </div>
       </div>
 
@@ -2419,7 +2421,7 @@ function SettingsPage({ settings, onSave }) {
             <input
               type="text"
               value={upiId}
-              onChange={(e) => setUpiId(e.target.value)}
+              onChange={(e) => { setUpiId(e.target.value); setPaymentDetailsVerified(false); }}
               style={{ width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid #DADCE0', fontSize: 14 }}
             />
           </div>
@@ -2428,7 +2430,7 @@ function SettingsPage({ settings, onSave }) {
             <input
               type="text"
               value={bankName}
-              onChange={(e) => setBankName(e.target.value)}
+              onChange={(e) => { setBankName(e.target.value); setPaymentDetailsVerified(false); }}
               style={{ width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid #DADCE0', fontSize: 14 }}
             />
           </div>
@@ -2437,7 +2439,7 @@ function SettingsPage({ settings, onSave }) {
             <input
               type="text"
               value={accountName}
-              onChange={(e) => setAccountName(e.target.value)}
+              onChange={(e) => { setAccountName(e.target.value); setPaymentDetailsVerified(false); }}
               style={{ width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid #DADCE0', fontSize: 14 }}
             />
           </div>
@@ -2446,7 +2448,7 @@ function SettingsPage({ settings, onSave }) {
             <input
               type="text"
               value={accountNumber}
-              onChange={(e) => setAccountNumber(e.target.value)}
+              onChange={(e) => { setAccountNumber(e.target.value); setPaymentDetailsVerified(false); }}
               style={{ width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid #DADCE0', fontSize: 14 }}
             />
           </div>
@@ -2455,11 +2457,16 @@ function SettingsPage({ settings, onSave }) {
             <input
               type="text"
               value={ifscCode}
-              onChange={(e) => setIfscCode(e.target.value)}
+              onChange={(e) => { setIfscCode(e.target.value); setPaymentDetailsVerified(false); }}
               style={{ width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid #DADCE0', fontSize: 14 }}
             />
           </div>
         </div>
+
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, color: '#374151', fontSize: 13, lineHeight: 1.5 }}>
+          <input type="checkbox" checked={paymentDetailsVerified} onChange={e => setPaymentDetailsVerified(e.target.checked)} />
+          <span>I verified these payment destinations belong to Nivaas and are correct. Tenants can see and pay these details when this is checked.</span>
+        </label>
 
         <h3 style={{ margin: '12px 0 0', fontSize: 16, fontWeight: 800, color: '#202124' }}>
           Support Contact
@@ -2499,7 +2506,7 @@ function SettingsPage({ settings, onSave }) {
    SUPER ADMIN LOGIN (Clean Google Cloud Console match)
    ========================================================================== */
 function SuperAdminLogin({ onLogin }) {
-  const [email, setEmail] = useState('admin@nivaas.space');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');

@@ -111,10 +111,12 @@ The complete variable list and defaults are documented in [`server/.env.example`
 | `DATABASE_URL` | PostgreSQL URL for the tenant/application database |
 | `PORT` | API port; defaults to `4100` |
 | `PUBLIC_URL` | Public base URL used in links and webhook setup |
+| `BASE_DOMAIN` | Base hostname used to build and resolve tenant subdomains |
 | `JWT_SECRET` | Secret used to sign authentication tokens |
 | `UPLOAD_DIR` | Upload storage directory |
 | `GEMINI_API_KEY` | Optional Gemini AI integration |
-| `META_APP_SECRET` and `META_VERIFY_TOKEN` | Optional WhatsApp webhook verification |
+| `WHATSAPP_WEBHOOK_ENABLED` | Enable Meta inbound webhooks; defaults to `false` |
+| `META_APP_SECRET` and `META_VERIFY_TOKEN` | Required with strong values when WhatsApp webhooks are enabled |
 | `WA_INTRO_TEMPLATE` and `WA_TEMPLATE_LANG` | Approved WhatsApp introduction template settings |
 | `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS` | Optional email delivery settings |
 
@@ -124,7 +126,9 @@ Use strong unique secrets in deployed environments. Do not commit `.env` files o
 
 `npm run db:init` creates or updates the application schema. The API also applies migrations during startup.
 
-For a multi-tenant SaaS installation, `npm run db:init:master` initializes the separate control-plane database used for tenants, subscriptions, and platform settings. Use this only when setting up the SaaS control plane, and secure the platform administrator account before exposing it publicly.
+For a multi-tenant SaaS installation, `npm run db:init:master` initializes the separate control-plane database used for tenants, subscriptions, and platform settings. On first setup, set `SUPERADMIN_INITIAL_NAME`, `SUPERADMIN_INITIAL_EMAIL`, and a unique `SUPERADMIN_INITIAL_PASSWORD` of at least 16 characters. Remove the password variable after initialization. Re-running initialization also replaces the legacy `admin@nivaas.space` bootstrap account if present.
+
+Subscription payment destinations are managed in the platform admin settings. They remain hidden and payment-proof submission stays disabled until an administrator enters and explicitly verifies valid UPI and bank details. No sample bank or UPI values are used as fallbacks.
 
 ## Verification
 
@@ -157,7 +161,14 @@ A Docker Compose deployment is provided in `docker-compose.yml`:
 
 1. Copy `server/.env.example` to the repository root as `.env` and configure production values.
 2. Set `DB_PASSWORD`, a unique `JWT_SECRET`, an HTTPS `PUBLIC_URL`, and the required Meta secrets if WhatsApp webhooks will be used.
-3. Start the application with:
+3. Run the deployment preflight before starting services:
+
+   ```bash
+   node deploy/preflight.mjs
+   ```
+
+   It checks production secrets, HTTPS/domain settings, optional WhatsApp webhook credentials, and Docker Compose configuration without printing secret values.
+4. Start the application with:
 
    ```bash
    docker compose up -d --build
@@ -166,11 +177,17 @@ A Docker Compose deployment is provided in `docker-compose.yml`:
 
 The API serves the built client when `client/dist` exists. The Vite development server is not needed in production. Configure a reverse proxy and HTTPS for public access; keep PostgreSQL and the API port private to the application host/network.
 
+### Backups and recovery
+
+Run `deploy/backup.sh` daily from the repository directory. It backs up PostgreSQL and uploaded files, verifies both archives, writes a SHA-256 manifest, and prevents overlapping runs. Set `BACKUP_DIR` to choose the backup directory and `BACKUP_RETENTION_DAYS` to change the default 14-day retention. Store a second copy off the application host; local backups alone do not protect against host or disk loss. Before restoring, copy both archives and the matching `.sha256` manifest into `BACKUP_DIR`, then run `bash deploy/restore.sh YYYY-MM-DD`. The restore script checks available checksums and archive paths before asking for confirmation because restore replaces production data.
+
 ## Health endpoints
 
 - `GET /health/live` checks whether the API process is responding.
 - `GET /health/ready` checks API and PostgreSQL readiness.
 - `GET /health` redirects to `/health/ready`.
+
+After deployment, run `bash deploy/smoke-check.sh https://your-public-hostname` from a host with `curl` and Node.js installed. It checks the public TLS connection, API liveness, and database readiness without requiring login credentials.
 
 ## Repository layout
 

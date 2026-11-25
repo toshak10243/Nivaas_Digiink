@@ -47,6 +47,10 @@ export default function RenewSubscriptionModal({ isOpen, onClose, billing, onRen
 
   const handleSubmit = async (e) => {
     e?.preventDefault();
+    if (!methods) {
+      say?.('Subscription payment destinations have not been configured and verified yet.');
+      return;
+    }
     if (!utrNumber || utrNumber.trim().length < 6) {
       say?.('Please enter a valid 12-digit UTR / Transaction Reference number');
       return;
@@ -184,7 +188,7 @@ export default function RenewSubscriptionModal({ isOpen, onClose, billing, onRen
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 24, alignItems: 'start' }}>
             
             {/* Left Column: Bank & UPI Info */}
-            <div>
+            {methods ? <div>
               <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 700, color: '#38bdf8', display: 'flex', alignItems: 'center', gap: 6 }}>
                 <Icon name="receipt" /> Step 1: Pay ₹{(currentPlan?.price || 0).toLocaleString('en-IN')} via UPI or NEFT
               </h3>
@@ -195,13 +199,13 @@ export default function RenewSubscriptionModal({ isOpen, onClose, billing, onRen
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <code style={{ fontSize: 15, fontWeight: 700, color: '#38bdf8' }}>
-                    {methods?.upi?.upiId || 'nivaas@icici'}
+                    {methods.upi.upiId}
                   </code>
                   <button
                     type="button"
                     className="btn sm ghost"
                     style={{ fontSize: 11, padding: '3px 8px' }}
-                    onClick={() => copyToClipboard(methods?.upi?.upiId || 'nivaas@icici', 'upi')}
+                    onClick={() => copyToClipboard(methods.upi.upiId, 'upi')}
                   >
                     {copiedKey === 'upi' ? '✓ Copied' : 'Copy UPI'}
                   </button>
@@ -216,23 +220,25 @@ export default function RenewSubscriptionModal({ isOpen, onClose, billing, onRen
                   Bank Current Account (NEFT / RTGS / IMPS)
                 </div>
                 <div style={{ fontSize: 12.5, lineHeight: 1.6, color: '#cbd5e1' }}>
-                  <div><b>Beneficiary:</b> {methods?.bank?.accountName || 'Nivaas Solutions Pvt Ltd'}</div>
+                  <div><b>Beneficiary:</b> {methods.bank.accountName}</div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span><b>A/C No:</b> <code style={{ color: '#fff' }}>{methods?.bank?.accountNumber || '50200084729182'}</code></span>
-                    <button type="button" className="btn sm ghost" style={{ fontSize: 11, padding: '2px 6px' }} onClick={() => copyToClipboard(methods?.bank?.accountNumber || '50200084729182', 'ac')}>
+                    <span><b>A/C No:</b> <code style={{ color: '#fff' }}>{methods.bank.accountNumber}</code></span>
+                    <button type="button" className="btn sm ghost" style={{ fontSize: 11, padding: '2px 6px' }} onClick={() => copyToClipboard(methods.bank.accountNumber, 'ac')}>
                       {copiedKey === 'ac' ? '✓ Copied' : 'Copy'}
                     </button>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span><b>IFSC:</b> <code style={{ color: '#fff' }}>{methods?.bank?.ifscCode || 'HDFC0000123'}</code></span>
-                    <button type="button" className="btn sm ghost" style={{ fontSize: 11, padding: '2px 6px' }} onClick={() => copyToClipboard(methods?.bank?.ifscCode || 'HDFC0000123', 'ifsc')}>
+                    <span><b>IFSC:</b> <code style={{ color: '#fff' }}>{methods.bank.ifscCode}</code></span>
+                    <button type="button" className="btn sm ghost" style={{ fontSize: 11, padding: '2px 6px' }} onClick={() => copyToClipboard(methods.bank.ifscCode, 'ifsc')}>
                       {copiedKey === 'ifsc' ? '✓ Copied' : 'Copy'}
                     </button>
                   </div>
-                  <div><b>Bank:</b> {methods?.bank?.bankName || 'HDFC Bank'}</div>
+                  <div><b>Bank:</b> {methods.bank.bankName}</div>
                 </div>
               </div>
-            </div>
+            </div> : <div role="status" style={{ border: '1px solid #f59e0b', borderRadius: 8, padding: 16, color: '#fcd34d', lineHeight: 1.5 }}>
+              Subscription payment destinations are not configured and verified yet. Please contact support before making a payment.
+            </div>}
 
             {/* Right Column: Upload Proof Form */}
             <form onSubmit={handleSubmit}>
@@ -296,7 +302,7 @@ export default function RenewSubscriptionModal({ isOpen, onClose, billing, onRen
               <button
                 type="submit"
                 className="btn sun"
-                disabled={submitting}
+                disabled={submitting || !methods}
                 style={{ width: '100%', padding: '12px 16px', fontSize: 14, fontWeight: 700 }}
               >
                 {submitting ? 'Submitting Proof…' : `Submit Proof for ₹${(currentPlan?.price || 0).toLocaleString('en-IN')}`}
