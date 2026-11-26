@@ -44,6 +44,9 @@ r.get('/:kind/:id', async (req, res) => {
     } else if (kind === 'tickets') {
       const f = await one(`SELECT url FROM ticket_files WHERE id = $1`, [id]);
       relPath = f?.url;
+    } else if (kind === 'booking-documents') {
+      const document = await one(`SELECT storage_key FROM booking_documents WHERE id = $1 AND org_id = $2`, [id, org]);
+      relPath = document?.storage_key;
     }
 
     if (!relPath) {

@@ -73,12 +73,54 @@ export async function runMigrations() {
     ALTER TABLE project_updates ADD COLUMN IF NOT EXISTS stage_name text;
     ALTER TABLE project_updates ADD COLUMN IF NOT EXISTS progress_pct int DEFAULT 0;
     ALTER TABLE project_updates ADD COLUMN IF NOT EXISTS media_urls jsonb DEFAULT '[]'::jsonb;
+    ALTER TABLE project_updates ADD COLUMN IF NOT EXISTS next_milestone text;
+    ALTER TABLE project_updates ADD COLUMN IF NOT EXISTS next_milestone_date date;
 
     -- Digital Buyer Handover Room & AI Registry Day Manager
     ALTER TABLE bookings ADD COLUMN IF NOT EXISTS handover_status text DEFAULT 'pending';
     ALTER TABLE bookings ADD COLUMN IF NOT EXISTS handover_docs jsonb DEFAULT '{}'::jsonb;
     ALTER TABLE bookings ADD COLUMN IF NOT EXISTS registry_checklist jsonb DEFAULT '{"pan_verified":false,"aadhar_verified":false,"form_26qb_tds":false,"bank_noc":false,"signatory_assigned":false,"status":"pending"}'::jsonb;
     ALTER TABLE bookings ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+    CREATE TABLE IF NOT EXISTS price_quotes (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+      unit_id uuid NOT NULL REFERENCES units(id) ON DELETE CASCADE,
+      lead_id uuid REFERENCES leads(id) ON DELETE SET NULL,
+      created_by uuid NOT NULL REFERENCES users(id),
+      list_price numeric NOT NULL CHECK (list_price >= 0),
+      discount numeric NOT NULL CHECK (discount >= 0),
+      proposed_price numeric NOT NULL CHECK (proposed_price >= 0),
+      note text,
+      status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','converted','expired')),
+      expires_at timestamptz NOT NULL,
+      decided_by uuid REFERENCES users(id) ON DELETE SET NULL,
+      decided_at timestamptz,
+      decision_note text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CHECK (discount <= list_price),
+      CHECK (proposed_price = list_price - discount)
+    );
+    CREATE INDEX IF NOT EXISTS price_quotes_org_status ON price_quotes(org_id, status, expires_at);
+    CREATE INDEX IF NOT EXISTS price_quotes_unit_created ON price_quotes(unit_id, created_at DESC);
+    ALTER TABLE bookings ADD COLUMN IF NOT EXISTS price_quote_id uuid REFERENCES price_quotes(id) ON DELETE SET NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS bookings_price_quote_unique ON bookings(price_quote_id) WHERE price_quote_id IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS booking_documents (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+      booking_id uuid NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+      title text NOT NULL,
+      category text NOT NULL DEFAULT 'other' CHECK (category IN ('allotment','agreement','payment','noc','identity','registry','other')),
+      file_name text NOT NULL,
+      mime_type text NOT NULL,
+      size_bytes bigint NOT NULL CHECK (size_bytes > 0),
+      storage_key text NOT NULL,
+      uploaded_by uuid REFERENCES users(id) ON DELETE SET NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS booking_documents_booking ON booking_documents(booking_id, created_at DESC);
 
     -- AI Sales Handover Memory
     ALTER TABLE leads ADD COLUMN IF NOT EXISTS handover_summary jsonb DEFAULT '{}'::jsonb;

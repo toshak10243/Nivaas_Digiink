@@ -77,6 +77,7 @@ before(async () => {
   process.env.META_APP_SECRET = '';
   process.env.GEMINI_API_KEY = '';
   process.env.NODE_ENV = 'test';
+  process.env.WHATSAPP_WEBHOOK_ENABLED = 'true';
   uploadDir = await mkdtemp(path.join(os.tmpdir(), 'nivaas-integration-'));
 
   const { ensureDatabaseSchema } = await import('../db/setup-db.js');
@@ -254,6 +255,99 @@ test('API regression flows: authorization, privacy, booking, payments, tickets, 
   assert.equal(releaseUnit.response.status, 200);
   assert.equal(releaseUnit.data.status, 'available');
 
+  // Expiring holds are safely reclaimable, while concurrent agents cannot both hold the same unit.
+  const holdAttempts = await Promise.all([
+    api(`/api/units/${fixtures.units['T-102']}`, { token: tokens.salesOne, method: 'PATCH', body: { action: 'hold' } }),
+    api(`/api/units/${fixtures.units['T-102']}`, { token: tokens.salesTwo, method: 'PATCH', body: { action: 'hold' } }),
+  ]);
+  assert.deepEqual(holdAttempts.map(x => x.response.status).sort(), [200, 409]);
+  const winningAgent = holdAttempts[0].response.status === 200 ? 'salesOne' : 'salesTwo';
+  await fixturePool.query(`UPDATE units SET hold_until = now() - interval '1 second' WHERE id = $1`, [fixtures.units['T-102']]);
+  const reclaim = await api(`/api/units/${fixtures.units['T-102']}`, {
+    token: tokens[winningAgent === 'salesOne' ? 'salesTwo' : 'salesOne'], method: 'PATCH', body: { action: 'hold' },
+  });
+  assert.equal(reclaim.response.status, 200, JSON.stringify(reclaim.data));
+  assert.notEqual(reclaim.data.hold_by, fixtures.users[winningAgent].id);
+  const ownerAfterReclaim = reclaim.data.hold_by === fixtures.users.salesOne.id ? 'salesOne' : 'salesTwo';
+  assert.equal((await api(`/api/units/${fixtures.units['T-102']}`, {
+    token: tokens[ownerAfterReclaim === 'salesOne' ? 'salesTwo' : 'salesOne'], method: 'PATCH', body: { action: 'release' },
+  })).response.status, 409, 'another agent must not release the active hold');
+  assert.equal((await api(`/api/units/${fixtures.units['T-102']}`, {
+    token: tokens[ownerAfterReclaim], method: 'PATCH', body: { action: 'extend' },
+  })).response.status, 200, 'the owner can extend their active hold');
+  assert.equal((await api(`/api/units/${fixtures.units['T-102']}`, {
+    token: tokens[ownerAfterReclaim], method: 'PATCH', body: { action: 'release' },
+  })).response.status, 200);
+
+  // Discounts cannot bypass approval. Admin decisions are auditable and quotes are single-use.
+  const directDiscount = await api('/api/bookings', {
+    token: tokens.salesOne, method: 'POST',
+    body: { unit_id: fixtures.units['T-102'], customer_name: 'Customer One', customer_email: fixtures.users.customerOne.email, discount: 1 },
+  });
+  assert.equal(directDiscount.response.status, 409);
+  assert.equal((await fixturePool.query('SELECT status FROM units WHERE id = $1', [fixtures.units['T-102']])).rows[0].status, 'available');
+
+  const rejectedOffer = await api('/api/quotes', {
+    token: tokens.salesOne, method: 'POST',
+    body: { unit_id: fixtures.units['T-102'], lead_id: fixtures.leads.salesOne, discount: 500, note: 'Buyer requested a price review' },
+  });
+  assert.equal(rejectedOffer.response.status, 201, JSON.stringify(rejectedOffer.data));
+  assert.equal(rejectedOffer.data.status, 'pending');
+  assert.equal((await api('/api/quotes?status=pending', { token: tokens.salesOne })).data.some(x => x.id === rejectedOffer.data.id), true);
+  assert.equal((await api(`/api/quotes/${rejectedOffer.data.id}`, {
+    token: tokens.salesTwo, method: 'PATCH', body: { status: 'approved' },
+  })).response.status, 403, 'sales users cannot approve discounts');
+  const rejectDecision = await api(`/api/quotes/${rejectedOffer.data.id}`, {
+    token: tokens.admin, method: 'PATCH', body: { status: 'rejected', decision_note: 'Outside approved range' },
+  });
+  assert.equal(rejectDecision.response.status, 200);
+  assert.equal(rejectDecision.data.status, 'rejected');
+  assert.equal(rejectDecision.data.decision_note, 'Outside approved range');
+
+  const expiredOffer = await api('/api/quotes', {
+    token: tokens.salesOne, method: 'POST', body: { unit_id: fixtures.units['T-102'], discount: 600 },
+  });
+  assert.equal(expiredOffer.response.status, 201);
+  await fixturePool.query(`UPDATE price_quotes SET expires_at = now() - interval '1 second' WHERE id = $1`, [expiredOffer.data.id]);
+  const approveExpired = await api(`/api/quotes/${expiredOffer.data.id}`, {
+    token: tokens.admin, method: 'PATCH', body: { status: 'approved' },
+  });
+  assert.equal(approveExpired.response.status, 409);
+  assert.equal((await fixturePool.query('SELECT status FROM price_quotes WHERE id = $1', [expiredOffer.data.id])).rows[0].status, 'expired');
+
+  const approvedOffer = await api('/api/quotes', {
+    token: tokens.salesOne, method: 'POST',
+    body: { unit_id: fixtures.units['T-103'], discount: 1000, note: 'Approved test quote' },
+  });
+  assert.equal(approvedOffer.response.status, 201);
+  assert.equal(approvedOffer.data.status, 'pending');
+  const approvedDecision = await api(`/api/quotes/${approvedOffer.data.id}`, {
+    token: tokens.admin, method: 'PATCH', body: { status: 'approved' },
+  });
+  assert.equal(approvedDecision.response.status, 200, JSON.stringify(approvedDecision.data));
+  assert.equal(approvedDecision.data.status, 'approved');
+  const approvedQuotes = await api(`/api/quotes?unit_id=${fixtures.units['T-103']}&status=approved`, { token: tokens.salesOne });
+  assert.equal(approvedQuotes.data.some(x => x.id === approvedOffer.data.id), true);
+  const wrongDiscount = await api('/api/bookings', {
+    token: tokens.salesOne, method: 'POST',
+    body: { unit_id: fixtures.units['T-103'], customer_name: 'Customer One', customer_email: fixtures.users.customerOne.email, discount: 999, price_quote_id: approvedOffer.data.id },
+  });
+  assert.equal(wrongDiscount.response.status, 409);
+  assert.equal((await fixturePool.query('SELECT status FROM units WHERE id = $1', [fixtures.units['T-103']])).rows[0].status, 'available');
+  const offerBooking = await api('/api/bookings', {
+    token: tokens.salesOne, method: 'POST',
+    body: { unit_id: fixtures.units['T-103'], customer_name: 'Customer One', customer_email: fixtures.users.customerOne.email, discount: 1000, price_quote_id: approvedOffer.data.id },
+  });
+  assert.equal(offerBooking.response.status, 200, JSON.stringify(offerBooking.data));
+  assert.equal(offerBooking.data.price_quote_id, approvedOffer.data.id);
+  assert.equal(Number(offerBooking.data.discount), 1000);
+  assert.equal((await fixturePool.query('SELECT status FROM price_quotes WHERE id = $1', [approvedOffer.data.id])).rows[0].status, 'converted');
+  const reusedQuoteBooking = await api('/api/bookings', {
+    token: tokens.salesOne, method: 'POST',
+    body: { unit_id: fixtures.units['T-103'], customer_name: 'Customer One', customer_email: fixtures.users.customerOne.email, discount: 1000, price_quote_id: approvedOffer.data.id },
+  });
+  assert.equal(reusedQuoteBooking.response.status, 409);
+
   const duplicateMember = await api('/api/team', {
     token: tokens.admin, method: 'POST', body: { role: 'sales', name: 'Duplicate Sales', email: fixtures.users.salesOne.email, password: 'AnotherPass123' },
   });
@@ -273,8 +367,30 @@ test('API regression flows: authorization, privacy, booking, payments, tickets, 
   assert.deepEqual(salesLeads.data.map(x => x.id), [fixtures.leads.salesOne]);
   const brokerLeads = await api('/api/leads', { token: tokens.brokerOne });
   assert.deepEqual(brokerLeads.data.map(x => x.id), [fixtures.leads.brokerOne]);
+  assert.equal(salesLeads.data[0].priority_level, 'low');
+  assert.equal(salesLeads.data[0].recommended_action, 'Call the customer and confirm their requirements');
   assert.equal(brokerLeads.data[0].phone, '••••••0003');
   assert.equal((await api(`/api/leads/${fixtures.leads.brokerOne}`, { token: tokens.brokerOne })).data.phone, '••••••0003');
+
+  const smartLead = await api('/api/leads', {
+    token: tokens.admin, method: 'POST',
+    body: {
+      name: 'Smart Follow-up Check', phone: '919910000095', project_id: fixtures.project.id,
+      stage: 'qualified', temperature: 'hot', budget: '₹80–90 L', config_pref: '3 BHK',
+      followup_at: new Date(Date.now() + 2 * 3600e3).toISOString(), auto_assign: true,
+    },
+  });
+  assert.equal(smartLead.response.status, 200);
+  assert.ok([fixtures.users.salesOne.id, fixtures.users.salesTwo.id].includes(smartLead.data.assigned_to), 'auto assignment must choose an active sales agent');
+  const prioritizedLead = (await api('/api/leads', { token: tokens.admin })).data.find(lead => lead.id === smartLead.data.id);
+  assert.equal(prioritizedLead.priority_level, 'high');
+  assert.ok(prioritizedLead.priority_reasons.includes('Budget captured'));
+  assert.ok(prioritizedLead.priority_reasons.includes('Flat preference captured'));
+  assert.equal(prioritizedLead.recommended_action, 'Send a shortlist that fits the budget and flat preference');
+  const leadDetails = await api(`/api/leads/${smartLead.data.id}`, { token: tokens.admin });
+  assert.equal(leadDetails.data.priority_score, prioritizedLead.priority_score);
+  assert.equal(leadDetails.data.recommended_action, prioritizedLead.recommended_action);
+
   const leadsBeforeInvalidInput = Number((await fixturePool.query('SELECT count(*) FROM leads WHERE org_id = $1', [fixtures.org.id])).rows[0].count);
   for (const invalidLead of [
     { name: 'Malformed Phone', phone: 'Call me at 919910000099' },
@@ -369,6 +485,76 @@ test('API regression flows: authorization, privacy, booking, payments, tickets, 
   assert.equal(conflicts.length, 1, 'The competing booking should receive a conflict');
   const booking = accepted[0].data;
 
+  // Buyer portal: account-scoped booking data, visit actions, construction progress, and private documents.
+  await fixturePool.query('UPDATE bookings SET lead_id = $2 WHERE id = $1', [booking.id, fixtures.leads.salesOne]);
+  const portalVisitTime = new Date(Date.now() + 3 * 86400000).toISOString();
+  const portalVisit = (await fixturePool.query(
+    `INSERT INTO site_visits (org_id,lead_id,project_id,agent_id,scheduled_at) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+    [fixtures.org.id, fixtures.leads.salesOne, fixtures.project.id, fixtures.users.salesOne.id, portalVisitTime],
+  )).rows[0];
+  await fixturePool.query(
+    `INSERT INTO project_updates (project_id,title,body,stage_name,progress_pct,media_urls) VALUES ($1,'Buyer portal update','Foundation work is complete.','Foundation',25,'[]')`,
+    [fixtures.project.id],
+  );
+  await fixturePool.query(
+    `INSERT INTO payments (booking_id,amount,mode,milestone) VALUES ($1,100,'NEFT','Booking amount')`,
+    [booking.id],
+  );
+
+  const forbiddenBookingPortal = await api('/api/portal', { token: tokens.customerTwo });
+  assert.equal(forbiddenBookingPortal.response.status, 200);
+  assert.equal(forbiddenBookingPortal.data.bookings.some(row => row.id === booking.id), false);
+  const customerPortal = await api('/api/portal', { token: tokens.customerOne });
+  assert.equal(customerPortal.response.status, 200, JSON.stringify(customerPortal.data));
+  const portalBooking = customerPortal.data.bookings.find(row => row.id === booking.id);
+  assert.ok(portalBooking, 'buyer should see their booking');
+  assert.equal(portalBooking.payments.length, 1);
+  assert.equal(portalBooking.updates.some(update => update.title === 'Buyer portal update'), true);
+  assert.equal(portalBooking.visits.some(visit => visit.id === portalVisit.id), true);
+  assert.deepEqual(portalBooking.schedule.map(item => item.milestone), ['Booking']);
+
+  const unauthorizedVisitAction = await api(`/api/portal/visits/${portalVisit.id}`, {
+    token: tokens.customerTwo, method: 'PATCH', body: { action: 'confirm' },
+  });
+  assert.equal(unauthorizedVisitAction.response.status, 404);
+  const invalidPortalReschedule = await api(`/api/portal/visits/${portalVisit.id}`, {
+    token: tokens.customerOne, method: 'PATCH', body: { action: 'reschedule', scheduled_at: '2020-01-01T10:00:00Z' },
+  });
+  assert.equal(invalidPortalReschedule.response.status, 400);
+  const confirmedPortalVisit = await api(`/api/portal/visits/${portalVisit.id}`, {
+    token: tokens.customerOne, method: 'PATCH', body: { action: 'confirm' },
+  });
+  assert.equal(confirmedPortalVisit.response.status, 200, JSON.stringify(confirmedPortalVisit.data));
+  assert.equal(confirmedPortalVisit.data.status, 'confirmed');
+  const newPortalVisitTime = new Date(Date.now() + 5 * 86400000).toISOString();
+  const rescheduledPortalVisit = await api(`/api/portal/visits/${portalVisit.id}`, {
+    token: tokens.customerOne, method: 'PATCH',
+    body: { action: 'reschedule', scheduled_at: newPortalVisitTime, reason: 'Travel conflict' },
+  });
+  assert.equal(rescheduledPortalVisit.response.status, 200, JSON.stringify(rescheduledPortalVisit.data));
+  assert.equal(rescheduledPortalVisit.data.status, 'scheduled');
+  assert.equal(new Date(rescheduledPortalVisit.data.scheduled_at).toISOString(), newPortalVisitTime);
+  const persistedPortalVisit = await fixturePool.query('SELECT status, scheduled_at, feedback FROM site_visits WHERE id = $1', [portalVisit.id]);
+  assert.equal(persistedPortalVisit.rows[0].status, 'scheduled');
+  assert.equal(new Date(persistedPortalVisit.rows[0].scheduled_at).toISOString(), newPortalVisitTime);
+  assert.match(persistedPortalVisit.rows[0].feedback, /Buyer requested reschedule/);
+
+  const buyerDocumentForm = new FormData();
+  buyerDocumentForm.append('category', 'agreement');
+  buyerDocumentForm.append('files', new Blob(['%PDF-1.4\nBuyer agreement test'], { type: 'application/pdf' }), 'agreement.pdf');
+  const uploadedBuyerDocument = await api(`/api/bookings/${booking.id}/documents`, {
+    token: tokens.admin, method: 'POST', body: buyerDocumentForm,
+  });
+  assert.equal(uploadedBuyerDocument.response.status, 201, JSON.stringify(uploadedBuyerDocument.data));
+  assert.equal(uploadedBuyerDocument.data[0].category, 'agreement');
+  const portalWithDocument = await api('/api/portal', { token: tokens.customerOne });
+  const buyerDocument = portalWithDocument.data.bookings.find(row => row.id === booking.id).documents[0];
+  assert.equal(buyerDocument.title, 'agreement.pdf');
+  assert.match(buyerDocument.url, /^\/private-files\/booking-documents\//);
+  assert.equal((await fetch(`${baseUrl}${buyerDocument.url}`)).status, 200, 'buyer can open the private document link');
+  assert.equal((await api('/api/portal', { token: tokens.customerTwo })).data.bookings.some(row => row.id === booking.id), false,
+    'another buyer must not receive this booking or its documents');
+
   const skippedBookingStatus = await api(`/api/bookings/${booking.id}`, {
     token: tokens.admin, method: 'PATCH', body: { status: 'possession' },
   });
@@ -405,6 +591,8 @@ test('API regression flows: authorization, privacy, booking, payments, tickets, 
     body: { booking_id: booking.id, category: 'plumbing', title: 'Integration test leak', priority: 'urgent' },
   });
   assert.equal(ownTicket.response.status, 200, JSON.stringify(ownTicket.data));
+  const customerTickets = await api('/api/tickets', { token: tokens.customerOne });
+  assert.equal(customerTickets.data.some(ticket => ticket.id === ownTicket.data.id), true, 'buyer should see their complaint in the self-service list');
   const otherTicket = await api('/api/tickets', {
     token: tokens.customerTwo, method: 'POST',
     body: { booking_id: booking.id, category: 'plumbing', title: 'Unauthorized ticket' },

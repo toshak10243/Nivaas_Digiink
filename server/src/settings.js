@@ -13,6 +13,7 @@ export const DEFAULTS = {
   holds: { hours: 48 },              // how long a unit hold lasts
   booking: { default_booking_pct: 10 },
   emi: { rate: 8.6, tenure_years: 20, down_pct: 20 },
+  payment: { upi_id: '', account_name: '', bank_name: '', account_number: '', ifsc_code: '', instructions: '', payment_details_verified: false },
 };
 
 const isObj = v => v && typeof v === 'object' && !Array.isArray(v);
@@ -35,6 +36,7 @@ export function validateSettings(input) {
     'holds.hours': [1, 720], 'booking.default_booking_pct': [0, 100], 'emi.rate': [0, 100],
     'emi.tenure_years': [1, 50], 'emi.down_pct': [0, 100]
   };
+  const paymentText = { upi_id: 120, account_name: 160, bank_name: 120, account_number: 34, ifsc_code: 11, instructions: 1000 };
   for (const [section, values] of Object.entries(input)) {
     if (!Object.hasOwn(DEFAULTS, section) || !values || typeof values !== 'object' || Array.isArray(values)) fail(`Unknown or invalid settings section: ${section}`);
     out[section] = {};
@@ -48,10 +50,23 @@ export function validateSettings(input) {
         const [min, max] = ranges[path];
         if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) fail(`${path} must be a number from ${min} to ${max}`);
         out[section][key] = value;
+      } else if (section === 'payment' && Object.hasOwn(paymentText, key)) {
+        if (typeof value !== 'string' || value.trim().length > paymentText[key]) fail(`${path} must be text of at most ${paymentText[key]} characters`);
+        const clean = value.trim();
+        if (key === 'upi_id' && clean && !/^[\w.-]+@[\w.-]+$/.test(clean)) fail('payment.upi_id must be a valid UPI ID');
+        if (key === 'account_number' && clean && !/^\d{6,34}$/.test(clean)) fail('payment.account_number must contain 6 to 34 digits');
+        if (key === 'ifsc_code' && clean && !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(clean.toUpperCase())) fail('payment.ifsc_code must be a valid IFSC code');
+        out[section][key] = key === 'ifsc_code' ? clean.toUpperCase() : clean;
       } else if (typeof DEFAULTS[section][key] === 'boolean') {
         if (typeof value !== 'boolean') fail(`${path} must be true or false`);
         out[section][key] = value;
       } else fail(`Unsupported setting: ${path}`);
+    }
+  }
+  if (out.payment?.payment_details_verified === true) {
+    const payment = { ...DEFAULTS.payment, ...(input.payment || {}) };
+    if (!/^[\w.-]+@[\w.-]+$/.test(payment.upi_id) || payment.account_name.trim().length < 2 || payment.bank_name.trim().length < 2 || !/^\d{6,34}$/.test(payment.account_number) || !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(payment.ifsc_code.toUpperCase())) {
+      fail('Complete valid UPI and bank details before marking buyer payment instructions as verified');
     }
   }
   return out;

@@ -243,6 +243,8 @@
 .hh-in .row{display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap}
 .homehero .hh-in .btn:not(.sun){color:var(--ink)}
 .advisor{display:flex;align-items:center;gap:12px}
+.visit-reschedule-form{display:flex;flex:1 1 100%;gap:8px;flex-wrap:wrap;align-items:center;padding:8px 0 0 28px}
+.visit-reschedule-form .input{flex:1 1 190px;min-width:0}
 
 /* projects */
 .projgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
@@ -528,6 +530,14 @@ a.btn{text-decoration:none}
 .followup-tag.overdue{background:#fee2e2;color:#b91c1c}
 .followup-tag.today{background:#fef3c7;color:#b45309}
 .followup-tag.upcoming{background:#e0f2fe;color:#0369a1}
+.lead-priority{display:inline-flex;align-items:center;width:max-content;border-radius:999px;padding:3px 8px;font-size:10px;line-height:1.2;font-weight:800;text-transform:uppercase;letter-spacing:.025em;white-space:nowrap}
+.lead-priority.high{background:#fee2e2;color:#b91c1c}
+.lead-priority.medium{background:#fef3c7;color:#92400e}
+.lead-priority.low{background:#e0f2fe;color:#075985}
+.lc-smart-row{display:flex;align-items:flex-start;gap:7px;flex-wrap:wrap;margin:2px 0}
+.lc-next-action{font-size:11px;line-height:1.4;color:var(--ink-2)}
+.smart-action-note{display:flex;flex-direction:column;gap:4px;padding:10px 12px;margin:8px 0;border:1px solid var(--line);border-radius:10px;background:var(--panel-2);font-size:13px;color:var(--ink)}
+.smart-action-note small{font-size:11px;color:var(--ink-3);line-height:1.4}
 .followup-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
 .rating-stars{display:flex;gap:4px;cursor:pointer}
 .rating-star{color:#cbd5e1;font-size:22px;transition:color .15s}
@@ -560,6 +570,125 @@ a.btn{text-decoration:none}
 .progress-stage-step.active{background:var(--sun)}
 .progress-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;margin-top:10px}
 .progress-thumb{width:100%;height:95px;object-fit:cover;border-radius:8px;border:1px solid var(--line)}
+.progress-media{min-width:0}
+.progress-media video{background:#111827}
+.portal-overview{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:14px 0 18px}
+.portal-overview-card{display:flex;align-items:flex-start;gap:11px;min-width:0;padding:16px 14px;border:1px solid var(--line);border-radius:15px;background:var(--panel);box-shadow:var(--shadow)}
+.portal-overview-card>div{display:flex;flex:1;flex-direction:column;gap:4px;min-width:0}
+.portal-overview-card small{color:var(--ink-3);font-size:11px;font-weight:700;letter-spacing:.045em;text-transform:uppercase}
+.portal-overview-card b{color:var(--ink);font-size:14px;line-height:1.35;overflow-wrap:anywhere}
+.portal-overview-card span:not(.portal-overview-icon){color:var(--ink-2);font-size:12px;line-height:1.4}
+.portal-overview-icon{display:grid;place-items:center;flex:none;width:36px;height:36px;border-radius:11px;background:rgba(16,185,129,.12);color:#07875d}
+.portal-overview-icon svg{width:18px;height:18px}
+.portal-overview-icon.amber{background:rgba(245,158,11,.14);color:#b45309}
+.portal-overview-icon.blue{background:rgba(59,130,246,.12);color:#2563eb}
+.portal-overview-icon.violet{background:rgba(99,102,241,.12);color:#4f46e5}
+.portal-home-card{align-items:center}
+.portal-home-card .pill{flex:none}
+.portal-next-stage{display:block;margin-top:5px;color:var(--ink-2);font-size:12px;font-weight:600}
+.visit-location{display:flex !important;align-items:flex-start;gap:5px;margin-top:5px}
+.visit-location svg{width:14px;height:14px;flex:none;margin-top:1px}
+.portal-installments{display:flex;flex-direction:column;gap:8px}
+.portal-installment{display:flex;align-items:center;gap:12px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2)}
+.portal-installment.paid{border-color:rgba(16,185,129,.22);background:rgba(16,185,129,.045)}
+.portal-installment-dot{display:grid;place-items:center;flex:none;width:30px;height:30px;border-radius:50%;background:rgba(245,158,11,.13);color:#b45309}
+.portal-installment.paid .portal-installment-dot{background:rgba(16,185,129,.14);color:#07875d}
+.portal-installment-dot svg{width:16px;height:16px}
+.portal-installment-main{display:flex;flex:1;flex-direction:column;gap:3px;min-width:0;color:var(--ink-2);font-size:12px}
+.portal-installment-head{display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--ink);font-size:14px}
+.portal-installment-main small{color:var(--ink-3)}
+.portal-installment-amount{white-space:nowrap}
+.portal-payment-instructions{display:flex;flex-direction:column;gap:12px;padding:15px;border:1px solid var(--line);border-radius:13px;background:var(--panel-2)}
+.portal-payment-instructions>div:first-child{display:flex;flex-direction:column;gap:3px}
+.payment-details-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.payment-details-grid>div{display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:10px;border:1px solid var(--line);border-radius:9px;background:var(--panel)}
+.payment-details-grid small{color:var(--ink-3);font-size:11px}
+.payment-details-grid b{overflow-wrap:anywhere}
+.payment-details-grid p{grid-column:1/-1;margin:0;padding:8px 2px;color:var(--ink-2);font-size:13px;white-space:pre-wrap}
+.portal-payment-unconfigured{padding:11px;border-radius:10px;background:rgba(245,158,11,.09);color:var(--ink-2);font-size:13px}
+.portal-document-center{margin:0 0 18px}
+.portal-document-center>.card-h>svg{width:20px;height:20px;flex:0 0 20px;margin-left:auto;color:var(--ink-2)}
+.portal-document-groups{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;align-items:start}
+.portal-doc-group{display:flex;flex-direction:column;gap:8px;min-width:0;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2)}
+.portal-doc-group-head{display:flex;align-items:center;gap:8px;color:var(--ink)}
+.portal-doc-group-head svg{width:17px;height:17px;color:var(--ink-2)}
+.portal-doc-group-head span{margin-left:auto;padding:2px 8px;border-radius:99px;background:var(--panel);color:var(--ink-2);font-size:11px}
+.portal-doc-items{display:flex;flex-direction:column;gap:7px;min-width:0}
+.portal-doc-item{display:flex;align-items:center;gap:8px;min-width:0;padding:9px;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:var(--ink);text-decoration:none}
+.portal-doc-item>div{display:flex;flex:1;flex-direction:column;gap:3px;min-width:0}
+.portal-doc-item>div b,.portal-doc-item>div small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.portal-doc-item>div small{color:var(--ink-3);font-size:11px}
+.portal-doc-type{flex:none;padding:4px 6px;border-radius:6px;background:rgba(59,130,246,.09);color:#2852a0;font-size:10px;font-weight:700;text-transform:capitalize}
+.portal-doc-item .btn{flex:none}
+.portal-doc-group>.btn{align-self:flex-start;margin-top:2px}
+@media(max-width:1100px){.portal-overview{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:1000px){.portal-document-groups{grid-template-columns:1fr 1fr}.portal-doc-group:last-child{grid-column:1/-1}}
+@media(max-width:600px){.portal-overview{grid-template-columns:minmax(0,1fr);gap:8px}.portal-overview-card{padding:12px}.portal-home-card{align-items:flex-start}.portal-home-card .pill{margin-left:auto}.progress-gallery{grid-template-columns:repeat(auto-fill,minmax(110px,1fr))}.portal-document-groups{grid-template-columns:1fr}.portal-doc-group:last-child{grid-column:auto}.portal-installment{align-items:flex-start}.portal-installment-amount{font-size:13px}.payment-details-grid{grid-template-columns:1fr 1fr}.portal-doc-item .btn{padding:6px 7px;font-size:11px}}
+.ticket-card-meta{display:flex;flex-direction:column;gap:3px;margin-top:5px;color:var(--ink-3);font-size:11px;line-height:1.4}
+.ticket-buyer-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2)}
+.ticket-buyer-summary>div{display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-width:0}
+.ticket-buyer-summary small{color:var(--ink-3);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+.ticket-buyer-summary b{font-size:13px;line-height:1.4;overflow-wrap:anywhere}
+.ticket-buyer-summary a{font-size:13px;color:var(--blue,#315db5)}
+.portal-complaint-row{align-items:flex-start}
+.portal-complaint-row>div{display:flex;flex-direction:column;gap:3px}
+.portal-complaint-row small{font-size:11px;line-height:1.35;white-space:normal}
+.portal-loading{width:100%}
+.portal-skeleton-hero,.portal-skeleton-overview>div,.portal-skeleton-panels>div{border:1px solid var(--line);border-radius:15px;background:linear-gradient(100deg,var(--panel-2) 25%,var(--panel) 45%,var(--panel-2) 65%);background-size:220% 100%;min-height:120px}
+.portal-skeleton-hero{height:260px}
+.portal-skeleton-overview{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.portal-skeleton-overview>div{min-height:100px}
+.portal-skeleton-panels{display:grid;grid-template-columns:1.5fr 1fr;gap:14px}
+.portal-skeleton-panels>div{min-height:270px}
+.portal-loading .portal-skeleton-hero,.portal-loading .portal-skeleton-overview>div,.portal-loading .portal-skeleton-panels>div{animation:portal-shimmer 1.5s linear infinite}
+@keyframes portal-shimmer{to{background-position-x:-220%}}
+@media(max-width:700px){
+  .homehero{min-height:230px;border-radius:15px}
+  .hh-in{width:100%;padding:20px 16px}
+  .hh-in h2{font-size:clamp(22px,7vw,30px);line-height:1.12}
+  .hh-in p{font-size:13px;line-height:1.45}
+  .hh-in .row{gap:7px}
+  .hh-in .row .btn{min-height:38px;padding:8px 10px;font-size:12px}
+  .portal-overview-card b{font-size:13px}
+  .portal-document-center .card-h{align-items:flex-start}
+  .portal-document-center .card-b{padding:11px}
+  .portal-doc-group{padding:9px}
+  .portal-doc-item{align-items:flex-start;flex-wrap:wrap}
+  .portal-doc-item>div{flex-basis:calc(100% - 100px)}
+  .portal-doc-item .btn{margin-left:auto}
+  .visit-reschedule-form{padding-left:0}
+  .visit-reschedule-form .input{flex-basis:100%;width:100%}
+  .ticket-buyer-summary{grid-template-columns:1fr}
+  .ticket-buyer-summary>div{padding-bottom:7px;border-bottom:1px solid var(--line)}
+  .ticket-buyer-summary>div:last-child{padding-bottom:0;border-bottom:0}
+  .tkcard{display:grid;grid-template-columns:44px minmax(0,1fr);gap:8px 10px;padding:10px}
+  .tkcard img,.tkicon{width:44px;height:44px;grid-row:1 / span 2}
+  .tkcard>div:first-of-type{align-self:center}
+  .tk-top{flex-wrap:wrap;gap:3px 7px}
+  .tk-top b{white-space:normal;overflow-wrap:anywhere}
+  .tk-right{grid-column:2;flex-direction:row;align-items:center;justify-content:flex-start;flex-wrap:wrap}
+  .ticket-card-meta span{overflow-wrap:anywhere}
+  .slabar{align-items:flex-start;font-size:13px}
+  .portal-installment{gap:8px;padding:9px}
+  .portal-installment-head{align-items:flex-start;font-size:13px}
+  .portal-installment-head .pill{flex:none}
+  .payment-details-grid{grid-template-columns:1fr}
+  .payment-details-grid p{grid-column:auto}
+  .portal-payment-instructions{padding:11px}
+  .visit-location{max-width:100%;overflow-wrap:anywhere}
+  .portal-skeleton-hero{height:220px}
+  .portal-skeleton-overview{grid-template-columns:1fr 1fr;gap:8px}
+  .portal-skeleton-overview>div{min-height:88px}
+  .portal-skeleton-panels{grid-template-columns:1fr;gap:10px}
+  .portal-skeleton-panels>div{min-height:180px}
+}
+@media(max-width:380px){
+  .portal-home-card{display:grid;grid-template-columns:36px minmax(0,1fr)}
+  .portal-home-card .pill{grid-column:2;margin-left:0;justify-self:start}
+  .portal-doc-type{font-size:9px}
+  .tkcard{grid-template-columns:36px minmax(0,1fr);gap:8px}
+  .tkcard img,.tkicon{width:36px;height:36px}
+}
 
 /* Registry Day Manager */
 .registry-checklist{display:flex;flex-direction:column;gap:8px;margin-top:12px}

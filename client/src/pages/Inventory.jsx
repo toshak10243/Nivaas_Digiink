@@ -25,6 +25,7 @@ export default function Inventory({ me, say, go, params = [] }) {
   const [share, setShare] = useState(null);
   const [emiModal, setEmiModal] = useState(null);
   const [costSheetModal, setCostSheetModal] = useState(null);
+  const [offerApprovals, setOfferApprovals] = useState(false);
 
   const towerNames = useMemo(() => [...new Set((units || []).map(u => u.tower || '—'))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })), [units]);
   const visibleUnits = useMemo(() => (units || []).filter(u =>
@@ -86,6 +87,7 @@ export default function Inventory({ me, say, go, params = [] }) {
           ))}
         </div>
         <div className="inv-actions">
+          {me.user.role === 'admin' && <button className="btn" onClick={() => setOfferApprovals(true)}><Icon name="receipt" />Offer approvals</button>}
           <button className="btn" onClick={shareProject}><Icon name="share" />Share project</button>
           <button className="btn sun" onClick={shareLiveSalesKit}>
             <Icon name="link" />{me.user.role === 'broker' ? 'Live Broker Kit' : 'Live Sales Kit'}
@@ -139,6 +141,7 @@ export default function Inventory({ me, say, go, params = [] }) {
       {share && <ShareModal {...share} say={say} onClose={() => setShare(null)} />}
       {emiModal && <EmiCalculatorModal {...emiModal} say={say} onClose={() => setEmiModal(null)} />}
       {costSheetModal && <DocPreviewModal type="cost_sheet" data={costSheetModal} say={say} onClose={() => setCostSheetModal(null)} />}
+      {offerApprovals && <OfferApprovals say={say} onClose={() => setOfferApprovals(false)} />}
     </div>
   );
 }
@@ -153,7 +156,8 @@ function UnitDrawer({ unit: u, project, me, say, go, reload, reloadProject, onSh
   const [book, setBook] = useState(false);
   const [edit, setEdit] = useState(false);
   const [editCostSheet, setEditCostSheet] = useState(false);
-  const act = async action => { try { await api.patch('/api/units/' + u.id, { action }); say({ hold: `${u.unit_no} is on hold for you`, release: 'Hold released', block: 'Unit blocked', unblock: 'Unit is available again' }[action]); reload(); } catch (e) { say(e.message); } };
+  const [offer, setOffer] = useState(false);
+  const act = async action => { try { await api.patch('/api/units/' + u.id, { action }); say({ hold: `${u.unit_no} is on hold for you`, extend: 'Hold extended', release: 'Hold released', block: 'Unit blocked', unblock: 'Unit is available again' }[action]); reload(); } catch (e) { say(e.message); } };
   const share = async () => {
     const s = await api.post('/api/share', { project_id: project.id, unit_id: u.id });
     onShare({
@@ -165,6 +169,8 @@ function UnitDrawer({ unit: u, project, me, say, go, reload, reloadProject, onSh
     });
   };
   const mine = u.hold_by === me.user.id;
+  const holdExpired = u.status === 'hold' && (!u.hold_until || new Date(u.hold_until) <= new Date());
+  const canBook = u.status === 'available' || (u.status === 'hold' && (mine || role === 'admin' || holdExpired));
 
   return (
     <section className="inventory-detail-panel" aria-label={`Details for ${u.unit_no}`}>
@@ -186,7 +192,7 @@ function UnitDrawer({ unit: u, project, me, say, go, reload, reloadProject, onSh
           : <img key={media.id} src={api.media(media.url)} alt={media.title || `${type?.name} interior`} loading="lazy" />)}</div>
       </div>}
 
-      {u.status === 'hold' && <div className="note"><b>On hold</b> by {mine ? 'you' : u.hold_by_name} until {date(u.hold_until)}.</div>}
+      {u.status === 'hold' && <div className="note"><b>{holdExpired ? 'Hold expired' : 'On hold'}</b>{!holdExpired && <> by {mine ? 'you' : u.hold_by_name} until {date(u.hold_until)}.</>}</div>}
       {['booked', 'sold'].includes(u.status) && <div className="note"><b>{u.status === 'sold' ? 'Sold' : 'Booked'}</b> {u.booking_date ? 'on ' + date(u.booking_date) : ''}{u.sold_by_name ? ` by ${u.sold_by_name}` : ''}{u.broker_name ? ` with broker ${u.broker_name}` : ''}{u.customer_name ? ` · Buyer: ${u.customer_name}` : ''}
         {u.booking_id && role !== 'broker' && <> · <button className="linkbtn" onClick={() => go('bookings/' + u.booking_id)}>Open booking</button></>}</div>}
 
@@ -204,15 +210,18 @@ function UnitDrawer({ unit: u, project, me, say, go, reload, reloadProject, onSh
         {['available', 'hold'].includes(u.status) && <button className="btn sun" onClick={share}><Icon name="share" />Share Unit</button>}
         <button className="btn" onClick={() => onOpenCostSheet(u, cs)}><Icon name="download" />Official Cost Sheet</button>
         <button className="btn" onClick={() => onOpenEmi(u)}><Icon name="calc" />EMI Calculator</button>
-        {u.status === 'available' && role !== 'customer' && <button className="btn" onClick={() => act('hold')}><Icon name="lock" />Hold</button>}
+        {(u.status === 'available' || (u.status === 'hold' && holdExpired)) && role !== 'customer' && <button className="btn" onClick={() => act('hold')}><Icon name="lock" />{holdExpired ? 'Take expired hold' : 'Hold'}</button>}
+        {u.status === 'hold' && !holdExpired && (mine || role === 'admin') && <button className="btn" onClick={() => act('extend')}><Icon name="clock" />Extend hold</button>}
         {u.status === 'hold' && (mine || role === 'admin') && <button className="btn" onClick={() => act('release')}>Release hold</button>}
-        {['available', 'hold'].includes(u.status) && ['admin', 'sales'].includes(role) && (u.status === 'available' || mine || role === 'admin') && <button className="btn ink" onClick={() => setBook(true)}><Icon name="receipt" />Mark as Booked</button>}
+        {canBook && ['admin', 'sales'].includes(role) && <button className="btn ink" onClick={() => setBook(true)}><Icon name="receipt" />Mark as Booked</button>}
+        {canBook && ['admin', 'sales'].includes(role) && <button className="btn" onClick={() => setOffer(true)}><Icon name="edit" />Request offer</button>}
         {role === 'admin' && u.status === 'available' && <button className="btn ghost" onClick={() => act('block')}>Block</button>}
         {role === 'admin' && u.status === 'blocked' && <button className="btn ghost" onClick={() => act('unblock')}>Unblock</button>}
         {role === 'admin' && !['booked', 'sold'].includes(u.status) && <button className="btn ghost" onClick={() => setEdit(true)}><Icon name="edit" />Edit Unit</button>}
       </div>
       {role === 'broker' && u.status === 'available' && <p className="hint">To book for your client, put it on hold and ask the builder’s sales team to raise the booking. Your commission is added automatically.</p>}
       {book && <BookModal unit={u} total={cs.total} me={me} say={say} onClose={() => setBook(false)} onDone={() => { setBook(false); reload(); }} />}
+      {offer && <OfferModal unit={u} total={cs.total} say={say} onClose={() => setOffer(false)} />}
       {edit && <EditUnit unit={u} say={say} onClose={() => setEdit(false)} onDone={() => { setEdit(false); reload(); }} />}
       {editCostSheet && <EditCostSheet project={project} say={say} onClose={() => setEditCostSheet(false)} onDone={() => { setEditCostSheet(false); reloadProject(); reload(); }} />}
       </div>
@@ -300,14 +309,17 @@ function EditCostSheet({ project, say, onClose, onDone }) {
 
 function BookModal({ unit, total, me, say, onClose, onDone }) {
   const [leads] = useLoad(() => api.get('/api/leads'), []);
-  const [f, setF] = useState({ lead_id: '', customer_name: '', customer_phone: '', customer_email: '', discount: 0, booking_amount: Math.round(total * 0.1), payment_mode: 'NEFT', payment_ref: '' });
+  const [quotes] = useLoad(() => api.get('/api/quotes?unit_id=' + unit.id + '&status=approved'), [unit.id]);
+  const [f, setF] = useState({ lead_id: '', customer_name: '', customer_phone: '', customer_email: '', price_quote_id: '', booking_amount: Math.round(total * 0.1), payment_mode: 'NEFT', payment_ref: '' });
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(null);
   const set = k => e => setF({ ...f, [k]: e.target.value });
   const lead = leads?.find(l => l.id === f.lead_id);
+  const quote = quotes?.find(q => q.id === f.price_quote_id && (!q.lead_id || q.lead_id === f.lead_id));
+  const discount = Number(quote?.discount || 0);
   const submit = async () => {
     setBusy(true);
-    try { const r = await api.post('/api/bookings', { unit_id: unit.id, ...f, discount: Number(f.discount || 0), booking_amount: Number(f.booking_amount || 0), customer_name: f.customer_name || lead?.name, customer_phone: f.customer_phone || lead?.phone }); setDone(r); say(`${unit.unit_no} booked`); }
+    try { const r = await api.post('/api/bookings', { unit_id: unit.id, ...f, discount, booking_amount: Number(f.booking_amount || 0), customer_name: f.customer_name || lead?.name, customer_phone: f.customer_phone || lead?.phone }); setDone(r); say(`${unit.unit_no} booked`); }
     catch (e) { say(e.message); }
     setBusy(false);
   };
@@ -319,9 +331,9 @@ function BookModal({ unit, total, me, say, onClose, onDone }) {
     </Modal>
   );
   return (
-    <Modal title={`Book ${unit.unit_no}`} onClose={onClose} wide footer={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn sun" disabled={busy || !f.customer_email || !(f.customer_name || lead)} onClick={submit}>{busy ? 'Booking…' : `Book for ${inr(total - Number(f.discount || 0))}`}</button></>}>
+    <Modal title={`Book ${unit.unit_no}`} onClose={onClose} wide footer={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn sun" disabled={busy || !f.customer_email || !(f.customer_name || lead)} onClick={submit}>{busy ? 'Booking…' : `Book for ${inr(total - discount)}`}</button></>}>
       <Field label="Buyer (from your leads)" id="bk-lead">
-        <select id="bk-lead" className="select" value={f.lead_id} onChange={e => { const l = leads.find(x => x.id === e.target.value); setF({ ...f, lead_id: e.target.value, customer_name: l?.name || '', customer_phone: l?.phone || '' }); }}>
+        <select id="bk-lead" className="select" value={f.lead_id} onChange={e => { const l = leads.find(x => x.id === e.target.value); setF({ ...f, lead_id: e.target.value, price_quote_id: '', customer_name: l?.name || '', customer_phone: l?.phone || '' }); }}>
           <option value="">New buyer (not in leads)</option>
           {(leads || []).filter(l => !['booked', 'lost'].includes(l.stage)).map(l => <option key={l.id} value={l.id}>{l.name} · {l.phone}</option>)}
         </select>
@@ -330,12 +342,57 @@ function BookModal({ unit, total, me, say, onClose, onDone }) {
         <Field label="Buyer name" id="bk-n"><input id="bk-n" className="input" value={f.customer_name} onChange={set('customer_name')} /></Field>
         <Field label="Mobile" id="bk-p"><input id="bk-p" className="input" value={f.customer_phone} onChange={set('customer_phone')} /></Field>
         <Field label="Email (portal login)" id="bk-e"><input id="bk-e" type="email" className="input" value={f.customer_email} onChange={set('customer_email')} /></Field>
-        <Field label="Discount (₹)" id="bk-d" hint={`List price ${inr(total)}`}><input id="bk-d" className="input" inputMode="numeric" value={f.discount} onChange={set('discount')} /></Field>
+        <Field label="Approved offer" id="bk-offer" hint={`List price ${inr(total)} · Discounts require admin approval`}><select id="bk-offer" className="select" value={f.price_quote_id} onChange={e => setF({ ...f, price_quote_id: e.target.value })}><option value="">No discount</option>{(quotes || []).filter(q => !q.lead_id || q.lead_id === f.lead_id).map(q => <option key={q.id} value={q.id}>{inr(q.discount)} off · {inr(q.proposed_price)} · expires {date(q.expires_at)}</option>)}</select></Field>
         <Field label="Booking amount received (₹)" id="bk-a"><input id="bk-a" className="input" inputMode="numeric" value={f.booking_amount} onChange={set('booking_amount')} /></Field>
         <Field label="Mode / reference" id="bk-m"><div style={{ display: 'flex', gap: 6 }}><select id="bk-m" className="select" style={{ width: 110 }} value={f.payment_mode} onChange={set('payment_mode')}><option>NEFT</option><option>Cheque</option><option>UPI</option><option>RTGS</option></select><input aria-label="Reference" className="input" placeholder="UTR / cheque no." value={f.payment_ref} onChange={set('payment_ref')} /></div></Field>
       </div>
     </Modal>
   );
+}
+
+function OfferModal({ unit, total, say, onClose }) {
+  const [discount, setDiscount] = useState('');
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const save = async () => {
+    setBusy(true);
+    try {
+      const quote = await api.post('/api/quotes', { unit_id: unit.id, discount: Number(discount), note });
+      setResult(quote);
+      say(quote.status === 'approved' ? 'Offer approved and ready to use' : 'Offer sent for admin approval');
+    } catch (error) { say(error.message); }
+    setBusy(false);
+  };
+  return <Modal title={result ? 'Offer submitted' : `Request offer · ${unit.unit_no}`} onClose={onClose}
+    footer={result ? <button className="btn sun" onClick={onClose}>Done</button> : <><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn sun" disabled={busy || !Number(discount) || Number(discount) >= total} onClick={save}>{busy ? 'Sending…' : 'Submit offer'}</button></>}>
+    {result ? <div className="note">{result.status === 'approved' ? 'Approved immediately.' : 'The builder admin will review this offer.'} It expires {date(result.expires_at)}.</div> : <>
+      <p className="muted">List price: <b>{inr(total)}</b>. Discounts are recorded and expire after 7 days.</p>
+      <Field label="Requested discount (₹)" id="offer-discount"><input id="offer-discount" className="input" type="number" min="1" max={total - 1} value={discount} onChange={e => setDiscount(e.target.value)} /></Field>
+      <Field label="Reason / buyer context" id="offer-note"><textarea id="offer-note" className="input" rows="3" maxLength="1000" value={note} onChange={e => setNote(e.target.value)} /></Field>
+      <p className="hint">Proposed price: {inr(total - Number(discount || 0))}</p>
+    </>}
+  </Modal>;
+}
+
+function OfferApprovals({ say, onClose }) {
+  const [quotes, reload] = useLoad(() => api.get('/api/quotes?status=pending'), []);
+  const [busy, setBusy] = useState(null);
+  const decide = async (quote, status) => {
+    setBusy(quote.id);
+    try {
+      await api.patch('/api/quotes/' + quote.id, { status });
+      say(`Offer ${status}`);
+      reload();
+    } catch (error) { say(error.message); }
+    setBusy(null);
+  };
+  return <Modal title="Pending offer approvals" onClose={onClose} wide footer={<button className="btn ghost" onClick={onClose}>Close</button>}>
+    {!quotes ? <Loading /> : quotes.length === 0 ? <Empty icon="checkCircle" title="No pending offers" /> :
+      <div className="table-wrap"><table><thead><tr><th>Unit</th><th>Requested by</th><th>Discount</th><th>Proposed price</th><th>Expires</th><th>Decision</th></tr></thead><tbody>
+        {quotes.map(q => <tr key={q.id}><td><b>{q.unit_no}</b><small className="muted">{q.project_name}{q.lead_name ? ` · ${q.lead_name}` : ''}</small>{q.note && <small>{q.note}</small>}</td><td>{q.created_by_name}</td><td>{inr(q.discount)}</td><td>{inr(q.proposed_price)}</td><td>{date(q.expires_at)}</td><td><div className="inline-actions"><button className="btn sm sun" disabled={busy === q.id} onClick={() => decide(q, 'approved')}>Approve</button><button className="btn sm ghost" disabled={busy === q.id} onClick={() => decide(q, 'rejected')}>Reject</button></div></td></tr>)}
+      </tbody></table></div>}
+  </Modal>;
 }
 
 function EditUnit({ unit, say, onClose, onDone }) {

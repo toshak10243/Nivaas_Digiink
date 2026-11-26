@@ -31,6 +31,7 @@ r.get('/me', h(async (req, res) => {
   const user = await one(`SELECT ${USER_COLS} FROM users WHERE id = $1`, [req.user.id]);
   const org = await one(`SELECT id, name, logo_url, phone, email, address, rera_promoter, settings FROM orgs WHERE id = $1`, [req.user.org]);
   org.settings = settingsOf(org);
+  if (req.user.role !== 'admin') delete org.settings.payment;
   const wa = await one(`SELECT id, display FROM wa_numbers WHERE user_id = $1`, [req.user.id]);
   res.json({ user: { ...withPrivateAvatar(user, req.user), whatsapp: wa }, org, publicUrl: config.publicUrl });
 }));

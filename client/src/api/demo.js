@@ -40,6 +40,8 @@ const P = id => projects.find(p => p.id === id), T = id => types.find(t => t.id 
 const priceOf = u => costSheet(P(u.project_id), T(u.unit_type_id), u);
 
 const bookings = [], payments = [], commissions = [];
+const bookingDocuments = [];
+const priceQuotes = [];
 for (const b of S.bookings) {
   const u = UN(b.unit), p = P(u.project_id);
   const deal = priceOf(u).total - b.discount;
@@ -164,8 +166,9 @@ Return only JSON: {"reply":"","visit_at":"ISO datetime if a visit day+time was a
 function pickAssignee(lead, exclude = []) {
   const p = P(lead.project_id);
   let people = users.filter(u => u.role === 'sales' && u.active && !exclude.includes(u.id) && (!p?.sales_pool?.length || p.sales_pool.includes(u.id)));
-  const here = people.filter(u => u.profile.availability !== 'away');
-  people = here.length ? here : people;
+  const available = people.filter(u => (u.profile?.availability || 'available') === 'available');
+  const aiCovered = people.filter(u => (u.profile?.availability || 'available') !== 'available' && u.profile?.ai_twin?.mode && u.profile.ai_twin.mode !== 'off');
+  people = available.length ? available : aiCovered;
   const load = id => leads.filter(l => l.assigned_to === id && !['booked', 'lost'].includes(l.stage)).length;
   return people.sort((a, b) => load(a.id) - load(b.id))[0] || null;
 }
@@ -186,8 +189,12 @@ function assign(lead, userId, actor, reason = 'auto') {
 }
 
 // ---------- helpers that mirror server joins ----------
+const leadSignals = l => ({
+  recent_share_views: shares.filter(s => s.lead_id === l.id && s.last_viewed && Date.now() - new Date(s.last_viewed).getTime() <= 30 * 864e5).length,
+  last_customer_message_at: chats.filter(c => c.lead_id === l.id).map(c => c.last_customer_at).filter(Boolean).sort().at(-1) || null,
+});
 const leadRow = l => ({ ...l, assigned_name: U(l.assigned_to)?.name || null, assigned_role: U(l.assigned_to)?.role || null, broker_name: U(l.broker_id)?.name || null, project_name: P(l.project_id)?.name || null,
-  unit_no: UN(l.unit_id)?.unit_no || null, next_visit: visits.filter(v => v.lead_id === l.id && v.status === 'scheduled').sort((a, b) => a.scheduled_at.localeCompare(b.scheduled_at))[0]?.scheduled_at || null });
+  ...leadSignals(l), unit_no: UN(l.unit_id)?.unit_no || null, next_visit: visits.filter(v => v.lead_id === l.id && v.status === 'scheduled').sort((a, b) => a.scheduled_at.localeCompare(b.scheduled_at))[0]?.scheduled_at || null });
 const scopeLeads = () => leads.filter(l => me.role === 'admin' || (me.role === 'sales' && l.assigned_to === me.id) || (me.role === 'broker' && (l.assigned_to === me.id || l.broker_id === me.id)));
 const bookingRow = b => { const u = UN(b.unit_id), c = U(b.customer_id); return { ...b, unit_no: u.unit_no, project_name: P(u.project_id).name, customer_name: c?.name, customer_phone: c?.phone, customer_email: c?.email,
   sold_by_name: U(b.sold_by)?.name || null, broker_name: U(b.broker_id)?.name || null, paid: payments.filter(p => p.booking_id === b.id).reduce((s, p) => s + p.amount, 0) }; };
@@ -318,11 +325,50 @@ on('DELETE', '/api/projects/:projectId/updates/:updateId', p => {
 on('GET', '/api/units', q => { need('admin', 'sales', 'broker'); return clone(units.filter(u => (!q.project_id || u.project_id === q.project_id) && (!q.status || u.status === q.status)).map(unitRow)); });
 on('PATCH', '/api/units/:id', (p, b) => {
   const u = UN(p.id); if (!u) throw err(404, 'Unit not found');
-  if (b.action === 'hold') { if (u.status !== 'available') throw err(409, `${u.unit_no} is not available`); Object.assign(u, { status: 'hold', hold_by: me.id, hold_until: new Date(Date.now() + org.settings.holds.hours * 3600e3).toISOString() }); notify(null, 'inventory', `${me.name} put ${u.unit_no} on hold for ${org.settings.holds.hours} h`, '/inventory'); }
-  else if (b.action === 'release') { if (u.status !== 'hold') throw err(409, 'Unit is not on hold'); if (me.role !== 'admin' && u.hold_by !== me.id) throw err(403, 'Only the person who held it (or an admin) can release it'); Object.assign(u, { status: 'available', hold_by: null, hold_until: null }); }
+  if (b.action === 'hold') { const expired = u.status === 'hold' && (!u.hold_until || Date.parse(u.hold_until) <= Date.now()); if (u.status !== 'available' && !expired) throw err(409, `${u.unit_no} is not available`); Object.assign(u, { status: 'hold', hold_by: me.id, hold_until: new Date(Date.now() + org.settings.holds.hours * 3600e3).toISOString() }); notify(null, 'inventory', `${me.name} put ${u.unit_no} on hold for ${org.settings.holds.hours} h`, '/inventory'); }
+  else if (b.action === 'extend') { if (u.status !== 'hold' || Date.parse(u.hold_until) <= Date.now() || (me.role !== 'admin' && u.hold_by !== me.id)) throw err(409, 'Only the active hold owner (or an admin) can extend this hold'); u.hold_until = new Date(Date.now() + org.settings.holds.hours * 3600e3).toISOString(); }
+  else if (b.action === 'release') { if (u.status !== 'hold' || Date.parse(u.hold_until) <= Date.now()) throw err(409, 'Unit is not on an active hold'); if (me.role !== 'admin' && u.hold_by !== me.id) throw err(403, 'Only the person who held it (or an admin) can release it'); Object.assign(u, { status: 'available', hold_by: null, hold_until: null }); }
   else if (b.action === 'block' || b.action === 'unblock') { need('admin'); Object.assign(u, { status: b.action === 'block' ? 'blocked' : 'available', hold_by: null, hold_until: null }); }
   else { need('admin'); Object.assign(u, { plc_pct: b.plc_pct ?? u.plc_pct, price_override: b.price_override === '' ? null : b.price_override ?? u.price_override, facing: b.facing ?? u.facing, notes: b.notes ?? u.notes }); }
   return clone(u);
+});
+
+on('GET', '/api/quotes', q => {
+  need('admin', 'sales');
+  return clone(priceQuotes.filter(x => (me.role === 'admin' || x.created_by === me.id || x.status === 'approved') &&
+    (!q.unit_id || x.unit_id === q.unit_id) && (!q.status || (x.status === 'pending' && Date.parse(x.expires_at) <= Date.now() ? 'expired' : x.status) === q.status))
+    .map(x => ({ ...x, status: x.status === 'pending' && Date.parse(x.expires_at) <= Date.now() ? 'expired' : x.status,
+      unit_no: UN(x.unit_id).unit_no, project_name: P(UN(x.unit_id).project_id).name,
+      lead_name: x.lead_id ? leads.find(l => l.id === x.lead_id)?.name : null, created_by_name: U(x.created_by).name })));
+});
+on('POST', '/api/quotes', (_, b) => {
+  need('admin', 'sales');
+  const u = UN(b.unit_id); if (!u) throw err(404, 'Unit not found');
+  const activeHold = u.status === 'hold' && u.hold_until && Date.parse(u.hold_until) > Date.now();
+  if (!['available', 'hold'].includes(u.status) || (activeHold && u.hold_by !== me.id && me.role !== 'admin')) throw err(409, 'This unit is not available for an offer');
+  const lead = b.lead_id ? leads.find(l => l.id === b.lead_id) : null;
+  if (b.lead_id && !lead) throw err(404, 'Lead not found');
+  if (lead?.project_id && lead.project_id !== u.project_id) throw err(400, 'Lead and unit must belong to the same project');
+  const list = priceOf(u).total, discount = Number(b.discount);
+  if (!Number.isFinite(discount) || discount < 1 || discount >= list) throw err(400, 'Discount must be between 1 and the unit price');
+  if (typeof b.note !== 'string' && b.note != null) throw err(400, 'Offer note must be text');
+  if ((b.note || '').length > 1000) throw err(400, 'Offer note is too long');
+  const quote = { id: nid('quote'), org_id: 'org', unit_id: u.id, lead_id: lead?.id || null, created_by: me.id, list_price: list, discount, proposed_price: list - discount,
+    note: b.note || null, status: me.role === 'admin' ? 'approved' : 'pending', expires_at: new Date(Date.now() + 7 * 86400e3).toISOString(),
+    decided_by: me.role === 'admin' ? me.id : null, decided_at: me.role === 'admin' ? now() : null, decision_note: null, created_at: now() };
+  priceQuotes.unshift(quote);
+  if (quote.status === 'pending') notify(null, 'inventory', `Discount approval requested for ${inr(discount)} on ${u.unit_no}`, '/inventory');
+  return clone(quote);
+});
+on('PATCH', '/api/quotes/:id', (p, b) => {
+  need('admin');
+  if (!['approved', 'rejected'].includes(b.status)) throw err(400, 'Decision must be approved or rejected');
+  const quote = priceQuotes.find(x => x.id === p.id); if (!quote) throw err(404, 'Price offer not found');
+  if (quote.status !== 'pending') throw err(409, 'This offer has already been decided');
+  if (Date.parse(quote.expires_at) <= Date.now()) { quote.status = 'expired'; throw err(409, 'This offer has expired'); }
+  quote.status = b.status; quote.decided_by = me.id; quote.decided_at = now(); quote.decision_note = b.decision_note || null;
+  notify(null, 'inventory', `Your price offer was ${quote.status}`, '/inventory');
+  return clone(quote);
 });
 
 // leads
@@ -331,6 +377,7 @@ on('GET', '/api/leads', q => { need('admin', 'sales', 'broker'); return clone(sc
 on('GET', '/api/leads/:id', p => {
   const l = scopeLeads().find(x => x.id === p.id); if (!l) throw err(404, 'Lead not found');
   return clone({ ...l, events: events.filter(e => e.lead_id === l.id).sort((a, b) => b.created_at.localeCompare(a.created_at)).map(e => ({ ...e, actor: U(e.actor_id)?.name || null })),
+    ...leadSignals(l),
     visits: visits.filter(v => v.lead_id === l.id).map(v => ({ ...v, agent: U(v.agent_id)?.name })), chats: chats.filter(c => c.lead_id === l.id).map(c => ({ id: c.id, ai_enabled: c.ai_enabled, display: waNumbers.find(w => w.id === c.wa_number_id)?.display, agent: U(c.agent_id)?.name })),
     shares: shares.filter(s => s.lead_id === l.id).map(s => ({ ...s, unit_no: UN(s.unit_id)?.unit_no })), assigned: U(l.assigned_to) ? { id: l.assigned_to, name: U(l.assigned_to).name, role: U(l.assigned_to).role, phone: U(l.assigned_to).phone } : null,
     broker: U(l.broker_id) ? { id: l.broker_id, name: U(l.broker_id).name, firm: U(l.broker_id).profile.firm } : null, project: P(l.project_id) ? { id: l.project_id, name: P(l.project_id).name } : null, unit: UN(l.unit_id) ? { id: l.unit_id, unit_no: UN(l.unit_id).unit_no, status: UN(l.unit_id).status } : null });
@@ -556,25 +603,36 @@ on('POST', '/demo/leadsathi', () => {
 
 // bookings
 on('GET', '/api/bookings', () => clone(bookings.filter(b => me.role === 'admin' || b.sold_by === me.id || b.broker_id === me.id || b.customer_id === me.id).sort((a, b) => b.created_at.localeCompare(a.created_at)).map(bookingRow)));
-on('GET', '/api/bookings/:id', p => { const b = bookings.find(x => x.id === p.id); if (!b) throw err(404, 'Booking not found'); const u = UN(b.unit_id), t = T(u.unit_type_id);
-  return clone({ ...bookingRow(b), floor: u.floor, facing: u.facing, type_name: t.name, carpet_sqft: t.carpet_sqft, super_sqft: t.super_sqft, project_id: u.project_id, payments: payments.filter(x => x.booking_id === b.id),
+on('GET', '/api/bookings/:id', p => { const b = bookings.find(x => x.id === p.id); if (!b || (me.role === 'customer' && b.customer_id !== me.id)) throw err(404, 'Booking not found'); const u = UN(b.unit_id), t = T(u.unit_type_id);
+  return clone({ ...bookingRow(b), floor: u.floor, facing: u.facing, type_name: t.name, carpet_sqft: t.carpet_sqft, super_sqft: t.super_sqft, project_id: u.project_id, documents: bookingDocuments.filter(x => x.booking_id === b.id), payments: payments.filter(x => x.booking_id === b.id),
     commissions: me.role === 'customer' ? [] : commissions.filter(c => c.booking_id === b.id && (me.role === 'admin' || c.user_id === me.id)).map(c => ({ ...c, name: U(c.user_id).name })) }); });
 on('POST', '/api/bookings', (_, b) => {
   need('admin', 'sales');
   const u = UN(b.unit_id); if (!u) throw err(404, 'Unit not found');
   if (!['available', 'hold'].includes(u.status)) throw err(409, `${u.unit_no} is already ${u.status}`);
-  if (u.status === 'hold' && u.hold_by !== me.id && me.role !== 'admin') throw err(409, `${u.unit_no} is on hold by someone else`);
+  const activeHold = u.status === 'hold' && u.hold_until && Date.parse(u.hold_until) > Date.now();
+  if (activeHold && u.hold_by !== me.id && me.role !== 'admin') throw err(409, `${u.unit_no} is on hold by someone else`);
   const lead = b.lead_id ? leads.find(l => l.id === b.lead_id) : null;
   const name = b.customer_name || lead?.name, email = (b.customer_email || '').trim();
   if (!name || !email) throw err(400, 'Customer name and email are needed (the email becomes their portal login)');
-  const deal = priceOf(u).total - Number(b.discount || 0);
+  const listPrice = priceOf(u).total, discount = Number(b.discount || 0);
+  let quote = null;
+  if (discount > 0 || b.price_quote_id) {
+    quote = priceQuotes.find(x => x.id === b.price_quote_id && x.unit_id === u.id);
+    if (!quote) throw err(409, 'An approved price offer is required for a discount');
+    if (quote.status !== 'approved' || Date.parse(quote.expires_at) <= Date.now()) throw err(409, 'This price offer is not approved or has expired');
+    if (quote.lead_id && quote.lead_id !== (lead?.id || null)) throw err(409, 'This offer was approved for a different lead');
+    if (Number(quote.discount) !== discount || Number(quote.list_price) !== listPrice) throw err(409, 'The approved offer no longer matches this price');
+  }
+  const deal = listPrice - discount;
   let cust = users.find(x => x.email.toLowerCase() === email.toLowerCase());
   const fresh = !cust;
   if (!cust) { cust = { id: nid('c'), role: 'customer', name, email, phone: norm(b.customer_phone || lead?.phone), profile: {}, active: true, created_at: now() }; users.push(cust); }
   const soldBy = me.role === 'sales' ? me.id : b.sold_by || lead?.assigned_to || null, brokerId = b.broker_id || lead?.broker_id || null;
-  const bk = { id: nid('bk'), org_id: 'org', unit_id: u.id, lead_id: lead?.id || null, customer_id: cust.id, sold_by: soldBy, broker_id: brokerId, deal_value: deal, discount: Number(b.discount || 0), booking_amount: Number(b.booking_amount || 0),
+  const bk = { id: nid('bk'), org_id: 'org', unit_id: u.id, lead_id: lead?.id || null, customer_id: cust.id, sold_by: soldBy, broker_id: brokerId, deal_value: deal, discount, price_quote_id: quote?.id || null, booking_amount: Number(b.booking_amount || 0),
     booking_date: new Date().toISOString().slice(0, 10), status: 'booked', schedule: scheduleFor(P(u.project_id), deal), notes: b.notes || null, created_at: now() };
   bookings.push(bk); Object.assign(u, { status: 'booked', hold_by: null, hold_until: null });
+  if (quote) quote.status = 'converted';
   if (bk.booking_amount) payments.push({ id: nid('pay'), booking_id: bk.id, amount: bk.booking_amount, paid_on: bk.booking_date, mode: b.payment_mode || 'NEFT', ref: b.payment_ref || '', milestone: 'Booking amount' });
   if (lead) { lead.stage = 'booked'; lead.unit_id = u.id; log(lead.id, me.id, 'stage', `Booked ${u.unit_no} for ${inr(deal)}`); }
   for (const [who, kind] of [[soldBy, 'sales_incentive'], [brokerId, 'broker_commission']]) { if (!who) continue; const rule = kind === 'sales_incentive' ? U(who).profile.incentive : U(who).profile.commission; if (!rule?.value) continue;
@@ -608,14 +666,48 @@ on('GET', '/api/portal', () => {
     ? bookings.filter(b => b.customer_id === me.id && b.status !== 'cancelled')
     : bookings.filter(b => b.status !== 'cancelled');
   return clone({ bookings: allowed.map(b => { const u = UN(b.unit_id), t = T(u.unit_type_id), p = P(u.project_id);
+    const visitRows = b.lead_id ? visits.filter(v => v.lead_id === b.lead_id).map(v => ({ ...v, project_name: P(v.project_id)?.name, agent_name: U(v.agent_id)?.name, agent_phone: U(v.agent_id)?.phone })) : [];
     return { ...bookingRow(b), floor: u.floor, facing: u.facing, type_name: t.name, carpet_sqft: t.carpet_sqft, builtup_sqft: t.builtup_sqft, super_sqft: t.super_sqft, floorplan_url: t.floorplan_url, project_id: p.id, location: p.location, possession: p.possession, cover_url: p.cover_url, brochure_url: p.brochure_url,
-      agent_name: U(b.sold_by)?.name, agent_phone: U(b.sold_by)?.phone, payments: payments.filter(x => x.booking_id === b.id), updates: updates.filter(x => x.project_id === p.id).sort((a, c) => c.created_at.localeCompare(a.created_at)) }; }) }); });
+      documents: bookingDocuments.filter(x => x.booking_id === b.id), visits: visitRows, agent_name: U(b.sold_by)?.name, agent_phone: U(b.sold_by)?.phone, payments: payments.filter(x => x.booking_id === b.id), updates: updates.filter(x => x.project_id === p.id).sort((a, c) => c.created_at.localeCompare(a.created_at)) }; }) }); });
+on('PATCH', '/api/portal/visits/:id', (p, b) => {
+  need('customer');
+  const visit = visits.find(x => x.id === p.id);
+  const owned = visit && bookings.some(x => x.customer_id === me.id && x.lead_id === visit.lead_id && x.status !== 'cancelled');
+  if (!owned || !['scheduled', 'confirmed'].includes(visit.status) || Date.parse(visit.scheduled_at) <= Date.now()) throw err(404, 'Upcoming visit not found');
+  if (b.action === 'confirm') visit.status = 'confirmed';
+  else if (b.action === 'reschedule') {
+    const timestamp = Date.parse(b.scheduled_at);
+    if (!Number.isFinite(timestamp) || timestamp <= Date.now()) throw err(400, 'New visit date and time must be in the future');
+    if (typeof b.reason !== 'string' || b.reason.length > 500) throw err(400, 'Reschedule reason must be at most 500 characters');
+    visit.scheduled_at = new Date(timestamp).toISOString();
+    visit.status = 'scheduled';
+    visit.feedback = b.reason ? 'Buyer requested reschedule: ' + b.reason : 'Buyer requested reschedule';
+  } else throw err(400, 'Visit action must be confirm or reschedule');
+  log(visit.lead_id, me.id, 'visit', b.action === 'confirm' ? 'Buyer confirmed the site visit' : 'Buyer rescheduled the site visit');
+  return clone(visit);
+});
+on('POST', '/api/bookings/:id/documents', (p, form) => {
+  need('admin');
+  const booking = bookings.find(x => x.id === p.id && x.status !== 'cancelled');
+  if (!booking) throw err(404, 'Booking not found');
+  const files = form.getAll('files');
+  if (!files.length) throw err(400, 'Choose at least one document');
+  const category = form.get('category') || 'other';
+  const docs = files.map((file, index) => {
+    if (!file.type.startsWith('image/') && file.type !== 'application/pdf') throw err(400, 'Buyer documents must be PDFs or images');
+    const document = { id: nid('doc'), booking_id: booking.id, category, file_name: file.name, title: files.length === 1 ? file.name : file.name + ' (' + (index + 1) + ')', mime_type: file.type, size_bytes: file.size, created_at: now(), url: URL.createObjectURL(file) };
+    bookingDocuments.unshift(document);
+    return document;
+  });
+  return clone(docs);
+});
 const ticketVisible = t => me.role === 'admin' || me.role === 'maintenance' || (me.role === 'customer' && t.customer_id === me.id) || (me.role === 'sales' && bookings.find(b => b.id === t.booking_id)?.sold_by === me.id);
 on('GET', '/api/tickets', q => clone(tickets.filter(t => ticketVisible(t) && (!q.status || t.status === q.status)).sort((a, b) => (['resolved', 'closed'].includes(a.status) - ['resolved', 'closed'].includes(b.status)) || a.sla_due_at.localeCompare(b.sla_due_at)).map(ticketRow)));
 on('GET', '/api/tickets/:id', p => { const t = tickets.find(x => x.id === p.id); if (!t || !ticketVisible(t)) throw err(404, 'Ticket not found');
   return clone({ ...ticketRow(t), files: ticketFiles.filter(f => f.ticket_id === t.id), comments: ticketComments.filter(c => c.ticket_id === t.id && (me.role !== 'customer' || !c.internal)).map(c => ({ ...c, name: U(c.author_id)?.name || null, role: U(c.author_id)?.role || null })) }); });
 on('POST', '/api/tickets', (_, f) => {
   const bk = bookings.find(b => b.id === f.get('booking_id')); if (!bk) throw err(404, 'Booking not found');
+  if (me.role === 'customer' && bk.customer_id !== me.id) throw err(404, 'Booking not found');
   if (!f.get('title')) throw err(400, 'Tell us in a few words what the problem is');
   const pri = f.get('priority') || 'normal', hrs = pri === 'urgent' ? org.settings.tickets.urgent_sla_hours : org.settings.tickets.sla_hours;
   const techs = users.filter(u => u.role === 'maintenance'); const tech = techs.sort((a, b) => tickets.filter(t => t.assigned_to === a.id && ['open', 'in_progress'].includes(t.status)).length - tickets.filter(t => t.assigned_to === b.id && ['open', 'in_progress'].includes(t.status)).length)[0];

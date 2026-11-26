@@ -1,12 +1,13 @@
 // After-sales: customer portal + complaint tickets with photos and a 24-hour SLA
 import { Router } from 'express';
-import { one, many, q } from '../db.js';
+import fs from 'node:fs/promises';
+import { one, many, q, tx } from '../db.js';
 import { h, allow, fail } from '../lib/auth.js';
 import { settingsOf } from '../settings.js';
 import { notify } from '../services/notify.js';
 import { privateUpload, verifyUploadedFiles, privateFileKey } from './projects.js';
-import { privateFileUrl } from './private-files.js';
-import { oneOf, number, text, uuid } from '../lib/validate.js';
+import { privateFileUrl, signPrivateUrl } from './private-files.js';
+import { oneOf, number, text, uuid, futureDateTime } from '../lib/validate.js';
 
 const r = Router();
 export const CATEGORIES = ['seepage', 'plumbing', 'electrical', 'carpentry', 'paint', 'tiles', 'lift', 'parking', 'other'];
@@ -43,11 +44,91 @@ r.get('/portal', allow('customer', 'admin', 'sales'), h(async (req, res) => {
      LEFT JOIN leads l ON l.id = b.lead_id
      ${whereClause}
      ORDER BY b.created_at DESC`, vals);
+  const org = await one(`SELECT settings FROM orgs WHERE id = $1`, [req.user.org]);
+  const payment = settingsOf(org).payment;
+  const paymentInstructions = payment.payment_details_verified ? {
+    upi_id: payment.upi_id,
+    account_name: payment.account_name,
+    bank_name: payment.bank_name,
+    account_number: payment.account_number,
+    ifsc_code: payment.ifsc_code,
+    instructions: payment.instructions,
+  } : null;
   for (const b of bookings) {
+    b.payment_instructions = paymentInstructions;
     b.payments = await many(`SELECT * FROM payments WHERE booking_id = $1 ORDER BY paid_on`, [b.id]);
     b.updates = await many(`SELECT pu.*, tw.name AS tower_name FROM project_updates pu LEFT JOIN towers tw ON tw.id::text = pu.tower_id::text WHERE pu.project_id = $1 ORDER BY pu.created_at DESC LIMIT 20`, [b.project_id]);
+    b.visits = b.lead_id ? await many(`SELECT v.id, v.scheduled_at, v.status, v.visitors_count, v.transport, v.pickup_address,
+      p.name AS project_name, p.location AS project_location, p.map_url, u.name AS agent_name, u.phone AS agent_phone
+      FROM site_visits v LEFT JOIN projects p ON p.id = v.project_id LEFT JOIN users u ON u.id = v.agent_id
+      WHERE v.org_id = $1 AND v.lead_id = $2 ORDER BY v.scheduled_at DESC LIMIT 20`, [req.user.org, b.lead_id]) : [];
+    b.documents = (await many(`SELECT id, title, category, file_name, mime_type, size_bytes, created_at
+      FROM booking_documents WHERE org_id = $1 AND booking_id = $2 ORDER BY created_at DESC`, [req.user.org, b.id]))
+      .map(document => ({ ...document, url: signPrivateUrl('booking-documents', document.id, req.user.org, 3600) }));
   }
   res.json({ bookings });
+}));
+
+/** Buyers can confirm or reschedule only future visits linked to their own booked lead. */
+r.patch('/portal/visits/:id', allow('customer'), h(async (req, res) => {
+  uuid(req.params.id, 'Visit ID');
+  const { action, scheduled_at, reason } = req.body || {};
+  oneOf(action, 'Visit action', ['confirm', 'reschedule'], { optional: false });
+  const newTime = action === 'reschedule' ? futureDateTime(scheduled_at, 'New visit date and time') : null;
+  const note = reason == null || reason === '' ? null : text(reason, 'Reschedule reason', { max: 500 });
+  const updated = await tx(async t => {
+    const visit = await t.one(`SELECT v.id, v.org_id, v.lead_id, v.agent_id, v.status, v.scheduled_at
+      FROM site_visits v WHERE v.id = $1 AND v.org_id = $2 AND v.status IN ('scheduled','confirmed')
+        AND v.scheduled_at > now()
+        AND EXISTS (SELECT 1 FROM bookings b WHERE b.customer_id = $3 AND b.lead_id = v.lead_id AND b.org_id = v.org_id AND b.status <> 'cancelled')
+      FOR UPDATE`, [req.params.id, req.user.org, req.user.id]);
+    if (!visit) return null;
+    if (action === 'confirm' && visit.status === 'confirmed') return { ...visit, unchanged: true };
+    const changed = await t.one(`UPDATE site_visits SET status = $3,
+        scheduled_at = COALESCE($4::timestamptz, scheduled_at),
+        feedback = CASE WHEN $5::text IS NULL THEN feedback ELSE $5 END
+      WHERE id = $1 AND org_id = $2 AND status IN ('scheduled','confirmed') AND scheduled_at > now()
+      RETURNING id, status, scheduled_at, lead_id, agent_id`,
+    [visit.id, req.user.org, action === 'confirm' ? 'confirmed' : 'scheduled', newTime, action === 'reschedule' ? (note ? `Buyer requested reschedule: ${note}` : 'Buyer requested reschedule') : null]);
+    if (!changed) return null;
+    return changed;
+  });
+  if (!updated) throw fail(404, 'Upcoming visit not found or has already changed');
+  if (updated.unchanged) return res.json({ id: updated.id, status: updated.status, scheduled_at: updated.scheduled_at });
+  const body = action === 'confirm' ? 'Buyer confirmed the site visit' : `Buyer rescheduled the site visit to ${new Date(updated.scheduled_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' })}${note ? `: ${note}` : ''}`;
+  await q(`INSERT INTO lead_events (lead_id, actor_id, kind, body) VALUES ($1,$2,'visit',$3)`, [updated.lead_id, req.user.id, body]);
+  if (updated.agent_id) await notify(req.user.org, updated.agent_id, 'visit', body, '/visits');
+  res.json(updated);
+}));
+
+/** Admins attach verified buyer-facing documents to a booking; files stay private. */
+r.post('/bookings/:id/documents', allow('admin'), privateUpload.array('files', 10), verifyUploadedFiles, h(async (req, res) => {
+  const files = req.files || [];
+  if (!files.length) throw fail(400, 'Choose at least one document');
+  try {
+    uuid(req.params.id, 'Booking ID');
+    if (files.some(file => file.mimetype !== 'application/pdf' && !file.mimetype.startsWith('image/'))) throw fail(400, 'Buyer documents must be PDFs or images');
+    const category = oneOf(req.body?.category || 'other', 'Document category', ['allotment', 'agreement', 'payment', 'noc', 'identity', 'registry', 'other'], { optional: false });
+    const title = req.body?.title ? text(req.body.title, 'Document title', { optional: false, max: 160 }) : null;
+    const booking = await one(`SELECT id FROM bookings WHERE id = $1 AND org_id = $2 AND status <> 'cancelled'`, [req.params.id, req.user.org]);
+    if (!booking) throw fail(404, 'Booking not found');
+    const documents = await tx(async t => {
+      const rows = [];
+      for (const [index, file] of files.entries()) {
+        const sourceName = String(file.originalname || '').split(/[\\/]/).pop().slice(0, 160);
+        const docTitle = title ? (files.length > 1 ? `${title} ${index + 1}` : title) : (sourceName || `Buyer document ${index + 1}`);
+        const document = await t.one(`INSERT INTO booking_documents (org_id, booking_id, title, category, file_name, mime_type, size_bytes, storage_key, uploaded_by)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id, title, category, file_name, mime_type, size_bytes, created_at`,
+        [req.user.org, booking.id, docTitle, category, sourceName || docTitle, file.mimetype, file.size, privateFileKey(req, file), req.user.id]);
+        rows.push({ ...document, url: signPrivateUrl('booking-documents', document.id, req.user.org, 3600) });
+      }
+      return rows;
+    });
+    res.status(201).json(documents);
+  } catch (error) {
+    await Promise.all(files.map(file => fs.unlink(file.path).catch(() => {})));
+    throw error;
+  }
 }));
 
 // ---------- tickets ----------
@@ -65,9 +146,11 @@ r.get('/tickets', h(async (req, res) => {
   let extra = '';
   if (req.query.status) { oneOf(req.query.status, 'Ticket status filter', ['open', 'in_progress', 'resolved', 'closed'], { optional: false }); vals.push(req.query.status); extra += ` AND t.status = $${vals.length}`; }
   const rows = await many(
-    `SELECT t.*, u.unit_no, p.name AS project_name, c.name AS customer_name, c.phone AS customer_phone, m.name AS assigned_name,
+    `SELECT t.*, u.unit_no, p.name AS project_name, c.name AS customer_name, c.phone AS customer_phone, m.name AS assigned_name, m.phone AS assigned_phone,
        (SELECT f.id FROM ticket_files f LEFT JOIN ticket_comments tc ON tc.id = f.comment_id WHERE f.ticket_id = t.id AND ($2 <> 'customer' OR f.comment_id IS NULL OR tc.internal = false) ORDER BY f.created_at LIMIT 1) AS thumb_id,
-       (SELECT count(*)::int FROM ticket_comments x WHERE x.ticket_id = t.id) AS comments
+       (SELECT count(*)::int FROM ticket_comments x WHERE x.ticket_id = t.id AND ($2 <> 'customer' OR x.internal = false)) AS comments,
+       (SELECT x.body FROM ticket_comments x WHERE x.ticket_id = t.id AND ($2 <> 'customer' OR x.internal = false) ORDER BY x.created_at DESC LIMIT 1) AS last_update,
+       (SELECT x.created_at FROM ticket_comments x WHERE x.ticket_id = t.id AND ($2 <> 'customer' OR x.internal = false) ORDER BY x.created_at DESC LIMIT 1) AS last_update_at
      FROM tickets t LEFT JOIN units u ON u.id = t.unit_id LEFT JOIN projects p ON p.id = u.project_id LEFT JOIN users c ON c.id = t.customer_id
      LEFT JOIN users m ON m.id = t.assigned_to LEFT JOIN bookings b ON b.id = t.booking_id
      WHERE t.org_id = $1${s.sql}${extra} ORDER BY (t.status IN ('resolved','closed')), t.sla_due_at LIMIT 300`, vals);
@@ -76,7 +159,7 @@ r.get('/tickets', h(async (req, res) => {
 
 r.get('/tickets/:id', h(async (req, res) => {
   uuid(req.params.id, 'Ticket ID');
-  const t = await one(`SELECT t.*, u.unit_no, p.name AS project_name, c.name AS customer_name, c.phone AS customer_phone, m.name AS assigned_name, b.sold_by
+  const t = await one(`SELECT t.*, u.unit_no, p.name AS project_name, c.name AS customer_name, c.phone AS customer_phone, m.name AS assigned_name, m.phone AS assigned_phone, b.sold_by
                        FROM tickets t LEFT JOIN units u ON u.id = t.unit_id LEFT JOIN projects p ON p.id = u.project_id LEFT JOIN users c ON c.id = t.customer_id
                        LEFT JOIN users m ON m.id = t.assigned_to LEFT JOIN bookings b ON b.id = t.booking_id
                        WHERE t.id = $1 AND t.org_id = $2`, [req.params.id, req.user.org]);
@@ -87,6 +170,9 @@ r.get('/tickets/:id', h(async (req, res) => {
     WHERE f.ticket_id = $1 AND ($2 <> 'customer' OR f.comment_id IS NULL OR c.internal = false) ORDER BY f.created_at`, [t.id, req.user.role]);
   t.files = files.map(f => ({ id: f.id, url: privateFileUrl('tickets', f.id, req.user) }));
   t.comments = await many(`SELECT x.*, u.name, u.role FROM ticket_comments x LEFT JOIN users u ON u.id = x.author_id WHERE x.ticket_id = $1 ${req.user.role === 'customer' ? 'AND NOT x.internal' : ''} ORDER BY x.created_at`, [t.id]);
+  const lastVisible = t.comments[t.comments.length - 1];
+  t.last_update = lastVisible?.body || null;
+  t.last_update_at = lastVisible?.created_at || t.created_at;
   res.json(t);
 }));
 
@@ -116,6 +202,7 @@ r.post('/tickets', allow('customer', 'admin', 'sales'), privateUpload.array('pho
   if (sla.notify_sales_agent && b.sold_by) await notify(req.user.org, b.sold_by, 'ticket', `Your customer raised a complaint. ${msg}`, `/tickets/${t.id}`);
   await notify(req.user.org, null, 'ticket', `New complaint. ${msg}`, `/tickets/${t.id}`);
   await q(`INSERT INTO ticket_comments (ticket_id, author_id, body) VALUES ($1,NULL,$2)`, [t.id, `Ticket received. ${tech ? tech.name + ' from our maintenance team will' : 'Our team will'} contact you within ${hours} hours.`]);
+  if (b.customer_id) await notify(req.user.org, b.customer_id, 'ticket', `Complaint #${t.number} received. Expected response within ${hours} hours.`, `/tickets/${t.id}`);
   res.json(t);
 }));
 

@@ -3,6 +3,7 @@ import { api } from '../api/index.js';
 import { Icon, Avatar, Pill, Drawer, Modal, Seg, Field, useLoad, Loading, Empty } from '../components/ui.jsx';
 import { STAGES, stageLabel, SOURCES, ago, dateTime, phone, money } from '../lib/format.js';
 import { ShareModal } from './Inventory.jsx';
+import { prioritizeLead } from '../../../shared/lead-priority.js';
 
 export default function Leads({ me, say, go, params }) {
   const role = me.user.role;
@@ -10,6 +11,7 @@ export default function Leads({ me, say, go, params }) {
   const [q, setQ] = useState('');
   const [temp, setTemp] = useState('all');
   const [followFilter, setFollowFilter] = useState('all');
+  const [priority, setPriority] = useState('all');
   const [who, setWho] = useState('all');
   const [leads, reload] = useLoad(() => api.get('/api/leads'), []);
   const [team] = useLoad(() => (role === 'admin' ? api.get('/api/team') : Promise.resolve([])), [role]);
@@ -22,16 +24,19 @@ export default function Leads({ me, say, go, params }) {
   const openId = params[0];
   if (!leads) return <div className="page"><Loading /></div>;
 
-  const isToday = d => d && new Date(d).toDateString() === new Date().toDateString();
-  const isOverdue = d => d && new Date(d) < new Date() && !isToday(d);
+  const isOverdue = d => d && new Date(d) < new Date();
+  const isToday = d => d && !isOverdue(d) && new Date(d).toDateString() === new Date().toDateString();
   const isFuture = d => d && new Date(d) > new Date() && !isToday(d);
 
-  const shown = leads.filter(l => {
+  const prioritizedLeads = leads.map(lead => ({ ...lead, ...prioritizeLead(lead) }))
+    .sort((a, b) => b.priority_score - a.priority_score || new Date(b.updated_at) - new Date(a.updated_at));
+  const shown = prioritizedLeads.filter(l => {
     if (temp !== 'all' && l.temperature !== temp) return false;
     if (who !== 'all' && (who === 'none' ? !!l.assigned_to : l.assigned_to !== who)) return false;
     if (followFilter === 'today' && !isToday(l.followup_at)) return false;
     if (followFilter === 'overdue' && !isOverdue(l.followup_at)) return false;
     if (followFilter === 'upcoming' && !isFuture(l.followup_at)) return false;
+    if (priority !== 'all' && l.priority_level !== priority) return false;
     if (q && !`${l.name} ${l.phone} ${l.unit_no || ''}`.toLowerCase().includes(q.toLowerCase())) return false;
     return true;
   });
@@ -80,7 +85,7 @@ export default function Leads({ me, say, go, params }) {
     <div className="page wide">
       <div className="pagehead">
         <div style={{ flex: 1 }}><h2>{role === 'broker' ? 'My clients' : role === 'sales' ? 'My leads' : 'All leads'}</h2>
-          <p>{role === 'broker' ? 'Register your clients here first. The first registration of a phone number is protected for you.' : 'Leads from LeadSathi, shared links, brokers and walk-ins land here and are routed to the least-busy agent.'}</p></div>
+          <p>{role === 'broker' ? 'Register your clients here first. The first registration of a phone number is protected for you.' : 'Leads from LeadSathi, shared links, brokers and walk-ins are prioritized by interest, budget, preferences, engagement, and follow-up timing.'}</p></div>
         {api.mode === 'demo' && role === 'admin' && <button className="btn" onClick={async () => { const r = await api.post('/demo/leadsathi'); say(`LeadSathi sent ${r.lead.name} → assigned to ${r.assigned}`); reload(); }}><Icon name="spark" />Simulate LeadSathi lead</button>}
         <button className="btn sun" onClick={() => setAdding(true)}><Icon name="userPlus" />{role === 'broker' ? 'Register client' : 'Add lead'}</button>
       </div>
@@ -89,6 +94,7 @@ export default function Leads({ me, say, go, params }) {
         <Seg value={view} onChange={setView} label="View" options={[['board', 'Board'], ['list', 'List']]} />
         <Seg value={temp} onChange={setTemp} label="Temperature" options={[['all', 'All'], ['hot', 'Hot'], ['warm', 'Warm'], ['cold', 'Cold']]} />
         <Seg value={followFilter} onChange={setFollowFilter} label="Follow-ups" options={[['all', 'All'], ['today', 'Today'], ['overdue', 'Overdue'], ['upcoming', 'Future']]} />
+        <Seg value={priority} onChange={setPriority} label="Priority" options={[['all', 'All'], ['high', 'High'], ['medium', 'Medium'], ['low', 'Low']]} />
         {role === 'admin' && <select className="select" style={{ width: 180 }} value={who} onChange={e => setWho(e.target.value)} aria-label="Assigned to"><option value="all">Everyone</option><option value="none">Unassigned</option>{sellers.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}</select>}
         <label className="search" style={{ flex: '1 1 200px', maxWidth: 260 }}><Icon name="search" /><span className="sr">Search</span><input placeholder="Name, phone or unit" value={q} onChange={e => setQ(e.target.value)} /></label>
       </div>
@@ -118,11 +124,11 @@ export default function Leads({ me, say, go, params }) {
         </div>
       ) : (
         <div className="card tablewrap"><table>
-          <thead><tr><th className="lead-select-cell"><input className="crm-checkbox" type="checkbox" checked={isAllSelected} ref={el => { if (el) el.indeterminate = selected.size > 0 && !isAllSelected; }} onChange={toggleSelectAll} aria-label="Select all visible leads" /></th><th>Name</th><th>Phone</th><th>Stage</th><th>Interest</th><th>Budget</th><th>Source</th>{role === 'admin' && <th>Owner</th>}<th>Next visit</th><th>Updated</th></tr></thead>
+          <thead><tr><th className="lead-select-cell"><input className="crm-checkbox" type="checkbox" checked={isAllSelected} ref={el => { if (el) el.indeterminate = selected.size > 0 && !isAllSelected; }} onChange={toggleSelectAll} aria-label="Select all visible leads" /></th><th>Name</th><th>Phone</th><th>Stage</th><th>Interest</th><th>Priority</th><th>Next action</th><th>Budget</th><th>Source</th>{role === 'admin' && <th>Owner</th>}<th>Next visit</th><th>Updated</th></tr></thead>
           <tbody>{shown.map(l => (
             <tr key={l.id} className={selected.has(l.id) ? 'row-selected' : ''} onClick={() => go('leads/' + l.id)}>
               <td className="lead-select-cell" onClick={e => e.stopPropagation()}><input className="crm-checkbox" type="checkbox" checked={selected.has(l.id)} onChange={() => toggleOne(l.id)} aria-label={`Select ${l.name || phone(l.phone)}`} /></td><td><div className="who"><span className={'tdot ' + l.temperature} /><b>{l.name || '—'}</b></div></td><td className="mono" style={{ fontSize: 13 }}>{phone(l.phone)}</td>
-              <td>{stageLabel(l.stage)}</td><td>{[l.config_pref, l.unit_no, l.project_name].filter(Boolean).join(' · ')}</td><td>{l.budget || '—'}</td><td>{SOURCES[l.source] || l.source}{l.broker_name ? ` · ${l.broker_name}` : ''}</td>
+              <td>{stageLabel(l.stage)}</td><td>{[l.config_pref, l.unit_no, l.project_name].filter(Boolean).join(' · ')}</td><td>{l.priority_level !== 'closed' && <span className={`lead-priority ${l.priority_level}`} title={(l.priority_reasons || []).join(' · ')}>{l.priority_level} · {l.priority_score}</span>}</td><td>{l.followup_at ? dateTime(l.followup_at) : l.recommended_action || 'Schedule follow-up'}</td><td>{l.budget || '—'}</td><td>{SOURCES[l.source] || l.source}{l.broker_name ? ` · ${l.broker_name}` : ''}</td>
               {role === 'admin' && <td>{l.assigned_name || <span className="pill hot">Unassigned</span>}</td>}<td>{l.next_visit ? dateTime(l.next_visit) : '—'}</td><td className="time">{ago(l.updated_at)}</td>
             </tr>))}</tbody>
         </table></div>
@@ -136,13 +142,14 @@ export default function Leads({ me, say, go, params }) {
 }
 
 function LeadCard({ l, onOpen, showOwner }) {
-  const isToday = l.followup_at && new Date(l.followup_at).toDateString() === new Date().toDateString();
-  const isOverdue = l.followup_at && new Date(l.followup_at) < new Date() && !isToday;
+  const isOverdue = l.followup_at && new Date(l.followup_at) < new Date();
+  const isToday = l.followup_at && !isOverdue && new Date(l.followup_at).toDateString() === new Date().toDateString();
 
   return (
     <button className="lcard" onClick={onOpen}>
       <div className="lc-top"><span className={'tdot ' + l.temperature} title={l.temperature} /><b>{l.name || phone(l.phone)}</b><span className="time">{ago(l.updated_at)}</span></div>
       <div className="lc-mid">{[l.config_pref, l.budget].filter(Boolean).join(' · ') || 'Requirement not known yet'}</div>
+      {l.priority_level !== 'closed' && <div className="lc-smart-row"><span className={`lead-priority ${l.priority_level}`} title={(l.priority_reasons || []).join(' · ')}>{l.priority_level} priority · {l.priority_score}</span><span className="lc-next-action">Next: {l.recommended_action}</span></div>}
       {l.unit_no && <div className="lc-unit"><Icon name="grid" />{l.unit_no}</div>}
       {l.followup_at && (
         <div style={{ margin: '4px 0' }}>
@@ -172,6 +179,7 @@ function LeadDrawer({ id, me, say, go, sellers, projects, onClose, onChange }) {
   const [fType, setFType] = useState('call');
   const [fNote, setFNote] = useState('');
   if (!l) return <Drawer title="Loading”¦" onClose={onClose}><Loading /></Drawer>;
+  const smart = prioritizeLead(l);
   const refresh = () => { reload(); onChange(); };
   const patch = async b => { try { await api.patch('/api/leads/' + l.id, b); refresh(); } catch (e) { say(e.message); } };
   const assign = async user_id => { try { const r = await api.post(`/api/leads/${l.id}/assign`, { user_id: user_id || null }); say(`Assigned to ${r.name}`); refresh(); } catch (e) { say(e.message); } };
@@ -183,7 +191,7 @@ function LeadDrawer({ id, me, say, go, sellers, projects, onClose, onChange }) {
       await patch({
         followup_at: isoDate || new Date(fDate).toISOString(),
         followup_type: type || fType,
-        followup_note: noteText || fNote || 'Follow-up call scheduled',
+        followup_note: noteText || fNote || smart.recommended_action || 'Follow-up call scheduled',
       });
       say('Follow-up reminder set');
       setFDate('');
@@ -218,8 +226,8 @@ function LeadDrawer({ id, me, say, go, sellers, projects, onClose, onChange }) {
     setFDate(new Date(d.getTime() - tzOffset).toISOString().slice(0, 16));
   };
 
-  const isToday = l.followup_at && new Date(l.followup_at).toDateString() === new Date().toDateString();
-  const isOverdue = l.followup_at && new Date(l.followup_at) < new Date() && !isToday;
+  const isOverdue = l.followup_at && new Date(l.followup_at) < new Date();
+  const isToday = l.followup_at && !isOverdue && new Date(l.followup_at).toDateString() === new Date().toDateString();
   const shareUnit = async unit => {
     const proj = projects.find(p => p.id === l.project_id) || projects[0];
     const s = await api.post('/api/share', { project_id: l.project_id || projects[0]?.id, unit_id: unit?.id, lead_id: l.id });
@@ -269,6 +277,7 @@ function LeadDrawer({ id, me, say, go, sellers, projects, onClose, onChange }) {
       <div className="followup-card">
         <div className="followup-card-h">
           <b>Follow-up & Next Action</b>
+          {smart.priority_level !== 'closed' && <span className={`lead-priority ${smart.priority_level}`} title={smart.priority_reasons.join(' · ')}>{smart.priority_level} priority · {smart.priority_score}</span>}
           {l.followup_at && (
             <span className={`followup-tag ${isOverdue ? 'overdue' : isToday ? 'today' : 'upcoming'}`}>
               <Icon name="clock" style={{ width: 12, height: 12 }} />
@@ -276,6 +285,7 @@ function LeadDrawer({ id, me, say, go, sellers, projects, onClose, onChange }) {
             </span>
           )}
         </div>
+        {smart.priority_level !== 'closed' && <div className="smart-action-note"><b>Suggested next action</b><span>{smart.recommended_action}</span>{smart.priority_reasons.length > 0 && <small>Based on: {smart.priority_reasons.join(' · ')}</small>}</div>}
 
         {l.followup_at ? (
           <div>
@@ -296,6 +306,9 @@ function LeadDrawer({ id, me, say, go, sellers, projects, onClose, onChange }) {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 6 }}>
             <span style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ink-3)', textTransform: 'uppercase' }}>Schedule Follow-up</span>
             <div className="preset-chips">
+              <button type="button" className="chipbtn active" onClick={() => applyPreset(smart.priority_level === 'high' ? '2h' : smart.priority_level === 'medium' ? 'tomorrow' : '3d')}>
+                Suggested: {smart.priority_level === 'high' ? '+2 Hrs' : smart.priority_level === 'medium' ? 'Tomorrow 11 AM' : 'In 3 Days'}
+              </button>
               <button type="button" className="chipbtn" onClick={() => applyPreset('2h')}>+2 Hrs</button>
               <button type="button" className="chipbtn" onClick={() => applyPreset('tomorrow')}>Tomorrow 11 AM</button>
               <button type="button" className="chipbtn" onClick={() => applyPreset('3d')}>In 3 Days</button>
@@ -311,7 +324,7 @@ function LeadDrawer({ id, me, say, go, sellers, projects, onClose, onChange }) {
             <input type="datetime-local" className="input" style={{ flex: '1 1 200px' }} value={fDate} onChange={e => setFDate(e.target.value)} aria-label="Follow-up Date & Time" />
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <input className="input" style={{ flex: '1 1 220px' }} placeholder="Note: e.g. Present payment schedule" value={fNote} onChange={e => setFNote(e.target.value)} aria-label="Follow-up Agenda Note" />
+            <input className="input" style={{ flex: '1 1 220px' }} placeholder={smart.recommended_action || 'Add a note for the next action'} value={fNote} onChange={e => setFNote(e.target.value)} aria-label="Follow-up Agenda Note" />
             <button className="btn sun" style={{ flex: '0 0 auto' }} disabled={!fDate} onClick={() => scheduleFollowup()}><Icon name="calendar" />Save Reminder</button>
           </div>
         </div>

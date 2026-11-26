@@ -10,7 +10,7 @@
     "db:init": "node db/init.js",
     "db:init:master": "node db/master-init.js",
     "db:seed": "node db/seed.js",
-    "test": "node --test test/unit/core.test.js test/unit/config.test.js test/unit/tenant-db.test.js test/unit/tenant-access.test.js test/unit/integration-db.test.js test/unit/superadmin-bootstrap.test.js test/unit/payment-settings.test.js test/unit/provisioner.test.js test/unit/superadmin.test.js",
+    "test": "node --test test/unit/core.test.js test/unit/config.test.js test/unit/tenant-db.test.js test/unit/tenant-access.test.js test/unit/integration-db.test.js test/unit/superadmin-bootstrap.test.js test/unit/payment-settings.test.js test/unit/lead-priority.test.js test/unit/provisioner.test.js test/unit/superadmin.test.js",
     "test:fast": "npm --prefix ../client run build && npm run check:syntax && npm test",
     "test:integration": "node test/run-integration.js",
     "test:integration:local": "node test/run-local-integration.js",

@@ -10,7 +10,7 @@ import { costSheet } from '../lib/pricing.js';
 import { config } from '../config.js';
 import { settingsOf } from '../settings.js';
 import { notify } from '../services/notify.js';
-import { number, oneOf, text, uuid, record, unitAreas, projectCharges } from '../lib/validate.js';
+import { number, oneOf, text, uuid, record, unitAreas, projectCharges, date } from '../lib/validate.js';
 
 const r = Router();
 
@@ -311,7 +311,7 @@ r.patch('/units/:id', h(async (req, res) => {
   const { action, plc_pct, price_override, facing, notes, unit_type_id } = req.body || {};
   if (Object.keys(req.body || {}).some(key => !['action', 'plc_pct', 'price_override', 'facing', 'notes', 'unit_type_id'].includes(key))) throw fail(400, 'Unsupported inventory field');
   if (unit_type_id !== undefined && unit_type_id !== null) uuid(unit_type_id, 'Unit type ID');
-  if (action !== undefined) oneOf(action, 'Inventory action', ['hold', 'release', 'block', 'unblock'], { optional: false });
+  if (action !== undefined) oneOf(action, 'Inventory action', ['hold', 'extend', 'release', 'block', 'unblock'], { optional: false });
   if (plc_pct !== undefined) number(plc_pct, 'PLC percentage', { min: 0, max: 100, optional: false });
   if (price_override !== undefined && price_override !== '') number(price_override, 'Price override', { min: 0, max: 1_000_000_000, optional: false });
   if (facing !== undefined && facing !== null && (typeof facing !== 'string' || facing.length > 80)) throw fail(400, 'Facing must be at most 80 characters');
@@ -321,13 +321,20 @@ r.patch('/units/:id', h(async (req, res) => {
     if (!['admin', 'sales', 'broker'].includes(req.user.role)) throw fail(403, 'Only sales staff can hold inventory');
     const hrs = settingsOf(org).holds.hours;
     const held = await one(`UPDATE units SET status = 'hold', hold_by = $2, hold_until = now() + ($3 || ' hours')::interval, updated_at = now()
-                           WHERE id = $1 AND status = 'available' RETURNING id`, [u.id, req.user.id, String(hrs)]);
+                           WHERE id = $1 AND (status = 'available' OR (status = 'hold' AND (hold_until IS NULL OR hold_until <= now()))) RETURNING id`, [u.id, req.user.id, String(hrs)]);
     if (!held) throw fail(409, `${u.unit_no} is no longer available`);
     await notify(req.user.org, null, 'inventory', `${req.user.name} put ${u.unit_no} (${u.project}) on hold for ${hrs} h`, '/inventory');
+  } else if (action === 'extend') {
+    if (!['admin', 'sales', 'broker'].includes(req.user.role)) throw fail(403, 'Only sales staff can extend a hold');
+    const hrs = settingsOf(org).holds.hours;
+    const extended = await one(`UPDATE units SET hold_until = now() + ($4 || ' hours')::interval, updated_at = now()
+                               WHERE id = $1 AND status = 'hold' AND hold_until > now()
+                                 AND (hold_by = $3 OR $2 = 'admin') RETURNING id`, [u.id, req.user.role, req.user.id, String(hrs)]);
+    if (!extended) throw fail(409, 'Only the active hold owner (or an admin) can extend this hold');
   } else if (action === 'release') {
     if (!['admin', 'sales', 'broker'].includes(req.user.role)) throw fail(403, 'Only sales staff can release inventory');
     const released = await one(`UPDATE units SET status = 'available', hold_by = NULL, hold_until = NULL, updated_at = now()
-                                WHERE id = $1 AND status = 'hold' AND ($2 = 'admin' OR hold_by = $3) RETURNING id`,
+                                WHERE id = $1 AND status = 'hold' AND hold_until > now() AND ($2 = 'admin' OR hold_by = $3) RETURNING id`,
       [u.id, req.user.role, req.user.id]);
     if (!released) throw fail(409, 'Unit is not held by you or has already changed');
   } else if (action === 'block' || action === 'unblock') {
@@ -404,12 +411,30 @@ r.delete('/media/:id', allow('admin'), h(async (req, res) => {
 }));
 
 // ---------- construction updates (shown to customers) ----------
+r.post('/projects/:id/update-media', allow('admin', 'sales'), upload.array('files', 20), verifyUploadedFiles, h(async (req, res) => {
+  const files = req.files || [];
+  try {
+    uuid(req.params.id, 'Project ID');
+    const project = await one(`SELECT id FROM projects WHERE id = $1 AND org_id = $2`, [req.params.id, req.user.org]);
+    if (!project) throw fail(404, 'Project not found');
+    if (!files.length) throw fail(400, 'Choose at least one progress photo or video');
+    if (files.some(file => !file.mimetype.startsWith('image/') && !file.mimetype.startsWith('video/'))) throw fail(400, 'Progress updates accept photos and videos only');
+    res.json(files.map(file => ({ url: fileUrl(req, file), name: file.originalname, type: file.mimetype, size: file.size })));
+  } catch (error) {
+    await Promise.all(files.map(file => fs.promises.unlink(file.path).catch(() => {})));
+    throw error;
+  }
+}));
+
 r.post('/projects/:id/updates', allow('admin', 'sales'), h(async (req, res) => {
-  const { title, body, media_url, tower_id, stage_name, progress_pct, media_urls } = req.body || {};
+  const { title, body, media_url, tower_id, stage_name, progress_pct, media_urls, next_milestone, next_milestone_date } = req.body || {};
   uuid(req.params.id, 'Project ID');
   const cleanTitle = text(title, 'Update title', { optional: false, max: 160 });
   const cleanBody = body === undefined || body === null || body === '' ? null : text(body, 'Update details', { max: 5000 });
   const cleanStage = stage_name === undefined || stage_name === null || stage_name === '' ? null : text(stage_name, 'Construction stage', { max: 120 });
+  const cleanNextMilestone = next_milestone === undefined || next_milestone === null || next_milestone === '' ? null : text(next_milestone, 'Next expected milestone', { max: 160 });
+  const cleanNextDate = next_milestone_date === undefined || next_milestone_date === null || next_milestone_date === '' ? null : date(next_milestone_date, 'Next milestone date', { optional: false }).slice(0, 10);
+  if (cleanNextDate && !cleanNextMilestone) throw fail(400, 'Enter the next expected milestone when providing its date');
   if (tower_id) uuid(tower_id, 'Tower ID');
   const progress = progress_pct === undefined || progress_pct === null || progress_pct === '' ? 0 : number(progress_pct, 'Progress percentage', { min: 0, max: 100, optional: false });
   let urls;
@@ -418,10 +443,10 @@ r.post('/projects/:id/updates', allow('admin', 'sales'), h(async (req, res) => {
     urls = media_urls.map((url, i) => validateMediaUrl(url, `Media URL ${i + 1}`));
   } else urls = media_url ? [validateMediaUrl(media_url, 'Media URL')] : [];
   if (tower_id && !(await one(`SELECT id FROM towers WHERE id = $1 AND project_id = $2`, [tower_id, req.params.id]))) throw fail(400, 'Tower must belong to this project');
-  const u = await one(`INSERT INTO project_updates (project_id, title, body, media_url, tower_id, stage_name, progress_pct, media_urls)
-    SELECT $1, $2, $3, $4, $5, $6, $7, $8
-    FROM projects WHERE id = $1 AND org_id = $9 RETURNING *`,
-    [req.params.id, cleanTitle, cleanBody, urls[0] || null, tower_id || null, cleanStage, progress, JSON.stringify(urls), req.user.org]);
+  const u = await one(`INSERT INTO project_updates (project_id, title, body, media_url, tower_id, stage_name, progress_pct, media_urls, next_milestone, next_milestone_date)
+    SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+    FROM projects WHERE id = $1 AND org_id = $11 RETURNING *`,
+    [req.params.id, cleanTitle, cleanBody, urls[0] || null, tower_id || null, cleanStage, progress, JSON.stringify(urls), cleanNextMilestone, cleanNextDate, req.user.org]);
   if (!u) throw fail(404, 'Project not found');
   const buyers = await many(`SELECT DISTINCT b.customer_id FROM bookings b JOIN units un ON un.id = b.unit_id WHERE un.project_id = $1 AND b.customer_id IS NOT NULL`, [req.params.id]);
   for (const b of buyers) await notify(req.user.org, b.customer_id, 'update', `Construction update: ${title}`, '/portal');

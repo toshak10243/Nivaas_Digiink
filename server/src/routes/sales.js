@@ -12,6 +12,8 @@ import { config } from '../config.js';
 import { resolveObjection, generateHandoverBrief, generateVisitPassportData } from '../services/gemini.js';
 import { email as validEmail, phone as validPhone, number, date as dateValue, futureDateTime, oneOf, text, uuid } from '../lib/validate.js';
 import { maskPhoneField, maskPhoneRows } from '../lib/privacy.js';
+import { signPrivateUrl } from './private-files.js';
+import { prioritizeLead } from '../../../shared/lead-priority.js';
 
 const r = Router();
 const STAGES = ['new', 'contacted', 'qualified', 'visit_scheduled', 'visit_done', 'negotiation', 'booked', 'lost'];
@@ -33,6 +35,10 @@ async function leadFor(user, id) {
   if (!l) throw fail(404, 'Lead not found');
   return l;
 }
+async function notifyBuyerForLeadVisit(orgId, leadId, body) {
+  const buyers = await many(`SELECT DISTINCT customer_id FROM bookings WHERE org_id = $1 AND lead_id = $2 AND status <> 'cancelled' AND customer_id IS NOT NULL`, [orgId, leadId]);
+  for (const buyer of buyers) await notify(orgId, buyer.customer_id, 'visit', body, '/portal');
+}
 async function assertOrgUser(id, org, roles) {
   if (!id) return null;
   const u = await one(`SELECT id, role, active FROM users WHERE id = $1 AND org_id = $2`, [id, org]);
@@ -49,11 +55,15 @@ r.get('/leads', allow('admin', 'sales', 'broker'), h(async (req, res) => {
   if (req.query.q) { vals.push('%' + req.query.q + '%'); extra += ` AND (l.name ILIKE $${vals.length} OR l.phone ILIKE $${vals.length})`; }
   const rows = await many(
     `SELECT l.*, a.name AS assigned_name, a.role AS assigned_role, b.name AS broker_name, p.name AS project_name, u.unit_no,
+       (SELECT count(*)::int FROM share_links sh WHERE sh.lead_id = l.id AND sh.last_viewed >= now() - interval '30 days') AS recent_share_views,
+       (SELECT max(c.last_customer_at) FROM chats c WHERE c.lead_id = l.id) AS last_customer_message_at,
        (SELECT scheduled_at FROM site_visits v WHERE v.lead_id = l.id AND v.status IN ('scheduled','confirmed') ORDER BY scheduled_at LIMIT 1) AS next_visit
      FROM leads l LEFT JOIN users a ON a.id = l.assigned_to LEFT JOIN users b ON b.id = l.broker_id
      LEFT JOIN projects p ON p.id = l.project_id LEFT JOIN units u ON u.id = l.unit_id
      WHERE l.org_id = $1${s.sql}${extra} ORDER BY l.updated_at DESC LIMIT 500`, vals);
-  res.json(maskPhoneRows(rows, 'phone', req.user.role));
+  const prioritized = rows.map(lead => ({ ...lead, ...prioritizeLead(lead) }))
+    .sort((a, b) => b.priority_score - a.priority_score || new Date(b.updated_at) - new Date(a.updated_at));
+  res.json(maskPhoneRows(prioritized, 'phone', req.user.role));
 }));
 
 r.get('/leads/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => {
@@ -68,7 +78,10 @@ r.get('/leads/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => {
     l.project_id ? one(`SELECT id, name, map_url, location FROM projects WHERE id = $1`, [l.project_id]) : null,
     l.unit_id ? one(`SELECT id, unit_no, status FROM units WHERE id = $1`, [l.unit_id]) : null,
   ]);
-  res.json({ ...maskPhoneField(l, 'phone', req.user.role), events, visits, chats, shares, assigned, broker, project, unit });
+  const prioritySignals = await one(`SELECT
+      (SELECT count(*)::int FROM share_links sh WHERE sh.lead_id = $1 AND sh.last_viewed >= now() - interval '30 days') AS recent_share_views,
+      (SELECT max(c.last_customer_at) FROM chats c WHERE c.lead_id = $1) AS last_customer_message_at`, [l.id]);
+  res.json({ ...maskPhoneField({ ...l, ...prioritySignals, ...prioritizeLead({ ...l, ...prioritySignals }) }, 'phone', req.user.role), events, visits, chats, shares, assigned, broker, project, unit });
 }));
 
 /** Manual lead, walk-in, or a broker registering their client (lead protection: first registration wins). */
@@ -109,8 +122,12 @@ r.post('/leads', allow('admin', 'sales', 'broker'), h(async (req, res) => {
     await logLead(lead.id, req.user.id, 'followup', `Follow-up (${lead.followup_type}) scheduled for ${fDate}${lead.followup_note ? ': ' + lead.followup_note : ''}`);
   }
   if (isBroker) await notify(req.user.org, null, 'lead', `Broker ${req.user.name} registered ${b.name}`, `/leads/${lead.id}`);
-  if (req.user.role === 'admin' && !lead.assigned_to && b.auto_assign) await assignLead(lead.id, { actorId: req.user.id });
-  res.json(maskPhoneField(lead, 'phone', req.user.role));
+  let responseLead = lead;
+  if (req.user.role === 'admin' && !lead.assigned_to && b.auto_assign) {
+    const assignee = await assignLead(lead.id, { actorId: req.user.id });
+    if (assignee) responseLead = await one(`SELECT * FROM leads WHERE id = $1`, [lead.id]);
+  }
+  res.json(maskPhoneField(responseLead, 'phone', req.user.role));
 }));
 
 r.patch('/leads/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => {
@@ -213,6 +230,7 @@ r.post('/visits', allow('admin', 'sales', 'broker'), h(async (req, res) => {
   await q(`UPDATE leads SET stage = 'visit_scheduled', first_touch_at = COALESCE(first_touch_at, now()) WHERE id = $1 AND stage IN ('new','contacted','qualified')`, [l.id]);
   const when = new Date(scheduled_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
   await logLead(l.id, req.user.id, 'visit', `Site visit scheduled for ${when} (${visitors_count} visitors · ${transport})`);
+  await notifyBuyerForLeadVisit(req.user.org, l.id, `Your site visit is scheduled for ${when}. Open the buyer portal for location and details.`);
   if (l.assigned_to && l.assigned_to !== req.user.id) await notify(req.user.org, l.assigned_to, 'visit', `Site visit booked for ${l.name}`, `/leads/${l.id}`);
   res.json(v);
 }));
@@ -230,6 +248,7 @@ r.post('/leads/:id/visits', allow('admin', 'sales', 'broker'), h(async (req, res
   await q(`UPDATE leads SET stage = 'visit_scheduled', first_touch_at = COALESCE(first_touch_at, now()) WHERE id = $1 AND stage IN ('new','contacted','qualified')`, [l.id]);
   const when = new Date(scheduled_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
   await logLead(l.id, req.user.id, 'visit', `Site visit scheduled for ${when} (${visitors_count} visitors · ${transport})`);
+  await notifyBuyerForLeadVisit(req.user.org, l.id, `Your site visit is scheduled for ${when}. Open the buyer portal for location and details.`);
   if (l.assigned_to && l.assigned_to !== req.user.id) await notify(req.user.org, l.assigned_to, 'visit', `Site visit booked for ${l.name}`, `/leads/${l.id}`);
   res.json(v);
 }));
@@ -375,6 +394,17 @@ r.patch('/visits/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => 
     await logLead(v.lead_id, req.user.id, 'visit', `Visit marked ${status}${feedback ? ': ' + feedback : ''}`);
   }
 
+  if (status) {
+    const when = new Date(v.scheduled_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
+    const buyerMessage = status === 'rescheduled' ? `Your site visit has been moved to ${when}. Open the buyer portal to review the updated details.`
+      : status === 'confirmed' ? `Your site visit for ${when} is confirmed.`
+        : status === 'cancelled' ? `Your site visit for ${when} has been cancelled. Please contact your advisor to arrange another time.`
+          : status === 'done' ? `Your site visit on ${when} is marked complete. Thank you for visiting.`
+            : status === 'no_show' ? `We couldn’t complete your site visit scheduled for ${when}. Contact your advisor to arrange another time.`
+              : null;
+    if (buyerMessage) await notifyBuyerForLeadVisit(req.user.org, v.lead_id, buyerMessage);
+  }
+
   res.json(v);
 }));
 
@@ -506,6 +536,81 @@ r.patch('/chats/:id', allow('admin', 'sales'), h(async (req, res) => {
 }));
 
 // ---------- bookings ----------
+r.get('/quotes', allow('admin', 'sales'), h(async (req, res) => {
+  if (req.query.unit_id) uuid(req.query.unit_id, 'Unit ID');
+  if (req.query.status) oneOf(req.query.status, 'Quote status', ['pending', 'approved', 'rejected', 'converted', 'expired'], { optional: false });
+  const vals = [req.user.org];
+  let where = 'q.org_id = $1';
+  if (req.user.role !== 'admin') { vals.push(req.user.id); where += ` AND (q.created_by = $${vals.length} OR q.status = 'approved')`; }
+  if (req.query.unit_id) { vals.push(req.query.unit_id); where += ` AND q.unit_id = $${vals.length}`; }
+  if (req.query.status === 'pending') where += ` AND q.status = 'pending' AND q.expires_at > now()`;
+  else if (req.query.status === 'expired') where += ` AND (q.status = 'expired' OR (q.status = 'pending' AND q.expires_at <= now()))`;
+  else if (req.query.status) { vals.push(req.query.status); where += ` AND q.status = $${vals.length}`; }
+  const rows = await many(`SELECT q.*, u.unit_no, p.name AS project_name, l.name AS lead_name, c.name AS created_by_name, d.name AS decided_by_name
+    FROM price_quotes q JOIN units u ON u.id = q.unit_id JOIN projects p ON p.id = u.project_id
+    LEFT JOIN leads l ON l.id = q.lead_id LEFT JOIN users c ON c.id = q.created_by LEFT JOIN users d ON d.id = q.decided_by
+    WHERE ${where} ORDER BY CASE WHEN q.status = 'pending' THEN 0 ELSE 1 END, q.created_at DESC LIMIT 500`, vals);
+  res.json(rows.map(row => row.status === 'pending' && new Date(row.expires_at) <= new Date() ? { ...row, status: 'expired' } : row));
+}));
+
+r.post('/quotes', allow('admin', 'sales'), h(async (req, res) => {
+  const b = req.body || {};
+  if (Object.keys(b).some(key => !['unit_id', 'lead_id', 'discount', 'note'].includes(key))) throw fail(400, 'Unsupported price quote field');
+  uuid(b.unit_id, 'Unit ID');
+  if (b.lead_id) uuid(b.lead_id, 'Lead ID');
+  const discount = number(b.discount, 'Discount', { min: 1, max: 1_000_000_000, optional: false });
+  const note = b.note == null || b.note === '' ? null : text(b.note, 'Offer note', { max: 1000 });
+  const lead = b.lead_id ? await leadFor(req.user, b.lead_id) : null;
+  const quote = await tx(async t => {
+    const unit = await t.one(`SELECT u.*, p.org_id, p.rate_sqft, p.charges FROM units u JOIN projects p ON p.id = u.project_id
+      WHERE u.id = $1 AND p.org_id = $2 FOR UPDATE OF u`, [b.unit_id, req.user.org]);
+    if (!unit) throw fail(404, 'Unit not found');
+    const holdIsActive = unit.status === 'hold' && unit.hold_until && new Date(unit.hold_until) > new Date();
+    if (!['available', 'hold'].includes(unit.status) || (holdIsActive && unit.hold_by !== req.user.id && req.user.role !== 'admin')) {
+      throw fail(409, 'This unit is not available for an offer');
+    }
+    if (lead?.project_id && lead.project_id !== unit.project_id) throw fail(400, 'Lead and unit must belong to the same project');
+    const type = await t.one('SELECT * FROM unit_types WHERE id = $1 AND project_id = $2', [unit.unit_type_id, unit.project_id]);
+    const listPrice = costSheet(unit, type, unit).total;
+    if (discount >= listPrice) throw fail(400, 'Discount must be less than the unit price');
+    const status = req.user.role === 'admin' ? 'approved' : 'pending';
+    return t.one(`INSERT INTO price_quotes (org_id, unit_id, lead_id, created_by, list_price, discount, proposed_price, note, status, expires_at, decided_by, decided_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,now() + interval '7 days',CASE WHEN $9 = 'approved' THEN $4::uuid END,CASE WHEN $9 = 'approved' THEN now() END)
+      RETURNING *`, [req.user.org, unit.id, lead?.id || null, req.user.id, listPrice, discount, listPrice - discount, note, status]);
+  });
+  if (quote.status === 'pending') await notify(req.user.org, null, 'inventory', `Discount approval requested for ${quote.discount} on unit ${b.unit_id}`, '/inventory');
+  res.status(201).json(quote);
+}));
+
+r.patch('/quotes/:id', allow('admin'), h(async (req, res) => {
+  uuid(req.params.id, 'Quote ID');
+  const b = req.body || {};
+  if (Object.keys(b).some(key => !['status', 'decision_note'].includes(key))) throw fail(400, 'Unsupported quote decision field');
+  oneOf(b.status, 'Decision', ['approved', 'rejected'], { optional: false });
+  const decisionNote = b.decision_note == null || b.decision_note === '' ? null : text(b.decision_note, 'Decision note', { max: 1000 });
+  const quote = await tx(async t => {
+    const snapshot = await t.one('SELECT unit_id FROM price_quotes WHERE id = $1 AND org_id = $2', [req.params.id, req.user.org]);
+    if (!snapshot) throw fail(404, 'Price offer not found');
+    const unit = await t.one(`SELECT u.*, p.rate_sqft, p.charges FROM units u JOIN projects p ON p.id = u.project_id
+      WHERE u.id = $1 AND p.org_id = $2 FOR UPDATE OF u`, [snapshot.unit_id, req.user.org]);
+    const current = await t.one('SELECT * FROM price_quotes WHERE id = $1 AND org_id = $2 FOR UPDATE', [req.params.id, req.user.org]);
+    if (!current) throw fail(404, 'Price offer not found');
+    if (current.status !== 'pending') throw fail(409, 'This offer has already been decided');
+    if (new Date(current.expires_at) <= new Date()) {
+      await t.q(`UPDATE price_quotes SET status = 'expired', updated_at = now() WHERE id = $1`, [current.id]);
+      return null;
+    }
+    if (!unit || !['available', 'hold'].includes(unit.status)) throw fail(409, 'This unit is no longer available for an offer');
+    const type = await t.one('SELECT * FROM unit_types WHERE id = $1 AND project_id = $2', [unit.unit_type_id, unit.project_id]);
+    if (Math.round(costSheet(unit, type, unit).total) !== Math.round(Number(current.list_price))) throw fail(409, 'Unit pricing changed; request a new offer');
+    return t.one(`UPDATE price_quotes SET status = $2, decided_by = $3, decided_at = now(), decision_note = $4, updated_at = now()
+      WHERE id = $1 RETURNING *`, [current.id, b.status, req.user.id, decisionNote]);
+  });
+  if (!quote) throw fail(409, 'This offer has expired');
+  await notify(req.user.org, quote.created_by, 'inventory', `Your price offer was ${quote.status}${decisionNote ? ': ' + decisionNote : ''}`, '/inventory');
+  res.json(quote);
+}));
+
 r.get('/bookings', h(async (req, res) => {
   const { role, id, org } = req.user;
   const where = role === 'admin' ? '' : role === 'sales' ? 'AND b.sold_by = $2' : role === 'broker' ? 'AND b.broker_id = $2' : role === 'customer' ? 'AND b.customer_id = $2' : 'AND false';
@@ -528,6 +633,9 @@ r.get('/bookings/:id', h(async (req, res) => {
   const mine = req.user.role === 'admin' || [b.sold_by, b.broker_id, b.customer_id].includes(req.user.id);
   if (!mine) throw fail(403, 'No access');
   b.payments = await many(`SELECT * FROM payments WHERE booking_id = $1 ORDER BY paid_on`, [b.id]);
+  b.documents = (await many(`SELECT id, title, category, file_name, mime_type, size_bytes, created_at
+    FROM booking_documents WHERE org_id = $1 AND booking_id = $2 ORDER BY created_at DESC`, [req.user.org, b.id]))
+    .map(document => ({ ...document, url: signPrivateUrl('booking-documents', document.id, req.user.org, 3600) }));
   b.commissions = req.user.role === 'customer' ? [] : await many(`SELECT c.*, u.name FROM commissions c JOIN users u ON u.id = c.user_id WHERE c.booking_id = $1 ${req.user.role === 'admin' ? '' : 'AND c.user_id = $2'}`, req.user.role === 'admin' ? [b.id] : [b.id, req.user.id]);
   res.json(maskPhoneField(b, 'customer_phone', req.user.role));
 }));
@@ -535,10 +643,12 @@ r.get('/bookings/:id', h(async (req, res) => {
 /** Book a unit. Creates the customer login, payment schedule, broker commission and sales incentive in one go. */
 r.post('/bookings', allow('admin', 'sales'), h(async (req, res) => {
   const b = req.body || {};
+  if (b.price_quote_id) uuid(b.price_quote_id, 'Price quote ID');
   const unit = await one(`SELECT u.*, p.org_id, p.rate_sqft, p.charges, p.payment_plan, p.name AS project_name FROM units u JOIN projects p ON p.id = u.project_id WHERE u.id = $1 AND p.org_id = $2`, [b.unit_id, req.user.org]);
   if (!unit) throw fail(404, 'Unit not found');
   if (!['available', 'hold'].includes(unit.status)) throw fail(409, `${unit.unit_no} is already ${unit.status}`);
-  if (unit.status === 'hold' && unit.hold_by !== req.user.id && req.user.role !== 'admin') throw fail(409, `${unit.unit_no} is on hold by someone else`);
+  const initialHoldActive = unit.status === 'hold' && unit.hold_until && new Date(unit.hold_until) > new Date();
+  if (initialHoldActive && unit.hold_by !== req.user.id && req.user.role !== 'admin') throw fail(409, `${unit.unit_no} is on hold by someone else`);
   const discount = number(b.discount ?? 0, 'Discount', { min: 0, max: 1_000_000_000, optional: false });
   const bookingAmount = number(b.booking_amount ?? 0, 'Booking amount', { min: 0, max: 1_000_000_000, optional: false });
   const bookingDate = b.booking_date ? dateValue(b.booking_date, 'Booking date', { optional: false }) : null;
@@ -566,16 +676,26 @@ r.post('/bookings', allow('admin', 'sales'), h(async (req, res) => {
                                    WHERE u.id = $1 AND p.org_id = $2 FOR UPDATE OF u`, [b.unit_id, req.user.org]);
     if (!lockedUnit) throw fail(404, 'Unit not found');
     if (!['available', 'hold'].includes(lockedUnit.status)) throw fail(409, `${lockedUnit.unit_no} is already ${lockedUnit.status}`);
-    if (lockedUnit.status === 'hold' && lockedUnit.hold_by !== req.user.id && req.user.role !== 'admin') throw fail(409, `${lockedUnit.unit_no} is on hold by someone else`);
+    const holdActive = lockedUnit.status === 'hold' && lockedUnit.hold_until && new Date(lockedUnit.hold_until) > new Date();
+    if (holdActive && lockedUnit.hold_by !== req.user.id && req.user.role !== 'admin') throw fail(409, `${lockedUnit.unit_no} is on hold by someone else`);
     const type = await t.one(`SELECT * FROM unit_types WHERE id = $1 AND project_id = $2`, [lockedUnit.unit_type_id, lockedUnit.project_id]);
     const listPrice = costSheet(lockedUnit, type, lockedUnit).total;
-    if (discount > listPrice) throw fail(400, 'Discount cannot exceed the unit price');
+    let priceQuote = null;
+    if (discount > 0 || b.price_quote_id) {
+      if (!b.price_quote_id) throw fail(409, 'An approved price offer is required for a discount');
+      priceQuote = await t.one(`SELECT * FROM price_quotes WHERE id = $1 AND org_id = $2 AND unit_id = $3 FOR UPDATE`,
+        [b.price_quote_id, req.user.org, lockedUnit.id]);
+      if (!priceQuote) throw fail(404, 'Price offer not found for this unit');
+      if (priceQuote.status !== 'approved' || new Date(priceQuote.expires_at) <= new Date()) throw fail(409, 'This price offer is not approved or has expired');
+      if (priceQuote.lead_id && priceQuote.lead_id !== (lead?.id || null)) throw fail(409, 'This offer was approved for a different lead');
+      if (Math.round(Number(priceQuote.discount)) !== Math.round(discount) || Math.round(Number(priceQuote.list_price)) !== Math.round(listPrice)) throw fail(409, 'The approved offer no longer matches this price');
+    }
     deal = Math.round(listPrice - discount);
     if (bookingAmount > deal) throw fail(400, 'Booking amount cannot exceed the deal value');
     bookedUnit = lockedUnit;
     const claimed = await t.one(`UPDATE units SET status = 'booked', hold_by = NULL, hold_until = NULL, updated_at = now()
                                  WHERE id = $1 AND status IN ('available','hold')
-                                   AND (status <> 'hold' OR hold_by = $2 OR $3 = 'admin') RETURNING id`,
+                                   AND (status <> 'hold' OR hold_until IS NULL OR hold_until <= now() OR hold_by = $2 OR $3 = 'admin') RETURNING id`,
       [lockedUnit.id, req.user.id, req.user.role]);
     if (!claimed) throw fail(409, `${lockedUnit.unit_no} is no longer available to book`);
     let cust = await t.one(`SELECT id FROM users WHERE org_id = $1 AND lower(email) = lower($2)`, [req.user.org, custEmail]);
@@ -585,9 +705,10 @@ r.post('/bookings', allow('admin', 'sales'), h(async (req, res) => {
       if (!customerRole) throw fail(409, 'That email is already used by a non-customer account');
     } else { cust = await t.one(`INSERT INTO users (org_id, role, name, email, phone, password_hash) VALUES ($1,'customer',$2,$3,$4,$5) RETURNING id`, [req.user.org, custName, custEmail, custPhone, await bcrypt.hash(temp, 10)]); newLogin = true; }
     const booking = await t.one(
-      `INSERT INTO bookings (org_id, unit_id, lead_id, customer_id, sold_by, broker_id, deal_value, discount, booking_amount, booking_date, schedule, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, COALESCE($10::date, current_date), $11, $12) RETURNING *`,
-      [req.user.org, lockedUnit.id, lead?.id || null, cust.id, soldBy, brokerId, deal, discount, bookingAmount, bookingDate, JSON.stringify(scheduleFor(lockedUnit, deal)), b.notes || null]);
+      `INSERT INTO bookings (org_id, unit_id, lead_id, customer_id, sold_by, broker_id, deal_value, discount, booking_amount, booking_date, schedule, notes, price_quote_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, COALESCE($10::date, current_date), $11, $12, $13) RETURNING *`,
+      [req.user.org, lockedUnit.id, lead?.id || null, cust.id, soldBy, brokerId, deal, discount, bookingAmount, bookingDate, JSON.stringify(scheduleFor(lockedUnit, deal)), b.notes || null, priceQuote?.id || null]);
+    if (priceQuote) await t.q(`UPDATE price_quotes SET status = 'converted', updated_at = now() WHERE id = $1 AND status = 'approved'`, [priceQuote.id]);
     if (bookingAmount > 0) await t.q(`INSERT INTO payments (booking_id, amount, mode, ref, milestone) VALUES ($1,$2,$3,$4,'Booking amount')`, [booking.id, bookingAmount, b.payment_mode || null, b.payment_ref || null]);
     if (lead) await t.q(`UPDATE leads SET stage = 'booked', unit_id = $2, updated_at = now() WHERE id = $1`, [lead.id, lockedUnit.id]);
     // money for the people who sold it

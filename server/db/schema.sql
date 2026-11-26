@@ -126,6 +126,8 @@ CREATE TABLE IF NOT EXISTS project_updates (
   tower_id     text,
   stage_name   text,
   progress_pct int NOT NULL DEFAULT 0,
+  next_milestone text,
+  next_milestone_date date,
   title        text NOT NULL,
   body         text,
   media_url    text,
@@ -235,6 +237,47 @@ CREATE TABLE IF NOT EXISTS bookings (
   created_at     timestamptz NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS bookings_unit_live ON bookings(unit_id) WHERE status <> 'cancelled';
+
+-- Auditable unit price offers. Discounts can only be booked from an approved quote.
+CREATE TABLE IF NOT EXISTS price_quotes (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  unit_id uuid NOT NULL REFERENCES units(id) ON DELETE CASCADE,
+  lead_id uuid REFERENCES leads(id) ON DELETE SET NULL,
+  created_by uuid NOT NULL REFERENCES users(id),
+  list_price numeric NOT NULL CHECK (list_price >= 0),
+  discount numeric NOT NULL CHECK (discount >= 0),
+  proposed_price numeric NOT NULL CHECK (proposed_price >= 0),
+  note text,
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','converted','expired')),
+  expires_at timestamptz NOT NULL,
+  decided_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  decided_at timestamptz,
+  decision_note text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (discount <= list_price),
+  CHECK (proposed_price = list_price - discount)
+);
+CREATE INDEX IF NOT EXISTS price_quotes_org_status ON price_quotes(org_id, status, expires_at);
+CREATE INDEX IF NOT EXISTS price_quotes_unit_created ON price_quotes(unit_id, created_at DESC);
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS price_quote_id uuid REFERENCES price_quotes(id) ON DELETE SET NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS bookings_price_quote_unique ON bookings(price_quote_id) WHERE price_quote_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS booking_documents (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  booking_id uuid NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+  title text NOT NULL,
+  category text NOT NULL DEFAULT 'other' CHECK (category IN ('allotment','agreement','payment','noc','identity','registry','other')),
+  file_name text NOT NULL,
+  mime_type text NOT NULL,
+  size_bytes bigint NOT NULL CHECK (size_bytes > 0),
+  storage_key text NOT NULL,
+  uploaded_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS booking_documents_booking ON booking_documents(booking_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS payments (
   id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),

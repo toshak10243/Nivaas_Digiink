@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { api } from '../api/index.js';
 import { Icon, Field, Seg, Switch, useLoad, Loading, copyText } from '../components/ui.jsx';
 
-const TABS = [['company', 'Company', 'building'], ['routing', 'Lead routing', 'funnel'], ['service', 'Complaints & holds', 'wrench'], ['integrations', 'LeadSathi & WhatsApp', 'link'], ['password', 'My password', 'lock']];
+const TABS = [['company', 'Company', 'building'], ['routing', 'Lead routing', 'funnel'], ['service', 'Complaints & holds', 'wrench'], ['payments', 'Buyer payments', 'receipt'], ['integrations', 'LeadSathi & WhatsApp', 'link'], ['password', 'My password', 'lock']];
 
 export default function Settings({ me, say, reloadMe }) {
   const [tab, setTab] = useState('company');
@@ -10,7 +10,7 @@ export default function Settings({ me, say, reloadMe }) {
   const s = org.settings;
   const setS = (g, k, v) => setOrg(o => ({ ...o, settings: { ...o.settings, [g]: { ...o.settings[g], [k]: v } } }));
   const save = async () => { try { const r = await api.put('/api/org', { name: org.name, phone: org.phone, email: org.email, address: org.address, rera_promoter: org.rera_promoter, settings: org.settings }); setOrg(r); reloadMe(); say('Settings saved'); } catch (e) { say(e.message); } };
-  const savable = ['company', 'routing', 'service'].includes(tab);
+  const savable = ['company', 'routing', 'service', 'payments'].includes(tab);
 
   return (
     <div className="page settings">
@@ -37,6 +37,19 @@ export default function Settings({ me, say, reloadMe }) {
           <Row l="A unit hold lasts"><select className="select" style={{ width: 140 }} value={s.holds.hours} onChange={e => setS('holds', 'hours', Number(e.target.value))} aria-label="Hold hours">{[12, 24, 48, 72, 168].map(h => <option key={h} value={h}>{h < 168 ? h + ' hours' : '7 days'}</option>)}</select></Row>
           <Row l="EMI calculator defaults" d="Shown on shared pages; buyers can change them.">
             <div style={{ display: 'flex', gap: 6 }}><input className="input" style={{ width: 80 }} aria-label="Rate %" value={s.emi.rate} onChange={e => setS('emi', 'rate', Number(e.target.value))} /><input className="input" style={{ width: 80 }} aria-label="Years" value={s.emi.tenure_years} onChange={e => setS('emi', 'tenure_years', Number(e.target.value))} /><input className="input" style={{ width: 80 }} aria-label="Down %" value={s.emi.down_pct} onChange={e => setS('emi', 'down_pct', Number(e.target.value))} /></div></Row>
+        </div></section>}
+
+        {tab === 'payments' && <section className="card"><div className="card-h"><div><h3>Buyer payment instructions</h3><span className="muted">Verified instructions are shown to buyers in their payment tracker.</span></div></div><div className="card-b">
+          <div className="kgrid">
+            <Field label="UPI ID" id="pay-upi"><input id="pay-upi" className="input" placeholder="builder@bank" value={s.payment.upi_id} onChange={e => setS('payment', 'upi_id', e.target.value)} /></Field>
+            <Field label="Account / beneficiary name" id="pay-name"><input id="pay-name" className="input" value={s.payment.account_name} onChange={e => setS('payment', 'account_name', e.target.value)} /></Field>
+            <Field label="Bank name" id="pay-bank"><input id="pay-bank" className="input" value={s.payment.bank_name} onChange={e => setS('payment', 'bank_name', e.target.value)} /></Field>
+            <Field label="Account number" id="pay-account"><input id="pay-account" className="input" inputMode="numeric" value={s.payment.account_number} onChange={e => setS('payment', 'account_number', e.target.value)} /></Field>
+            <Field label="IFSC code" id="pay-ifsc"><input id="pay-ifsc" className="input" maxLength={11} value={s.payment.ifsc_code} onChange={e => setS('payment', 'ifsc_code', e.target.value.toUpperCase())} /></Field>
+          </div>
+          <div style={{ marginTop: 12 }}><Field label="Additional payment instructions" id="pay-instructions"><textarea id="pay-instructions" className="textarea" rows={3} maxLength={1000} placeholder="Include escrow name, reference to add, or where to send the payment receipt." value={s.payment.instructions} onChange={e => setS('payment', 'instructions', e.target.value)} /></Field></div>
+          <div style={{ marginTop: 12 }}><Switch on={s.payment.payment_details_verified} label="I verified these account details; show them to buyers" onChange={v => setS('payment', 'payment_details_verified', v)} /></div>
+          <p className="hint">Only mark the details verified after checking them with your bank. Buyers see these details with a reminder to confirm account information before transferring.</p>
         </div></section>}
 
         {tab === 'integrations' && <Integrations me={me} say={say} />}

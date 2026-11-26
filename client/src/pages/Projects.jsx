@@ -212,12 +212,13 @@ function Pricing({ p, save }) {
       </div>
       <div><div className="eyebrow" style={{ marginBottom: 8 }}>Payment plan · {total}% {total !== 100 && <span style={{ color: 'var(--hot)' }}>(must add up to 100%)</span>}</div>
         <div className="planrows">{plan.map((m, i) => (
-          <div key={i} className="editrow" style={{ gridTemplateColumns: '1fr 90px 38px' }}>
-            <input className="input" aria-label="Milestone" value={m.milestone} onChange={e => setPlan(plan.map((x, j) => j === i ? { ...x, milestone: e.target.value } : x))} />
-            <input className="input" aria-label="Percent" inputMode="decimal" value={m.pct} onChange={e => setPlan(plan.map((x, j) => j === i ? { ...x, pct: Number(e.target.value) } : x))} />
+          <div key={i} className="editrow" style={{ gridTemplateColumns: 'minmax(130px,1fr) 80px minmax(130px,1fr) 38px' }}>
+            <input className="input" aria-label="Milestone" placeholder="Milestone" value={m.milestone} onChange={e => setPlan(plan.map((x, j) => j === i ? { ...x, milestone: e.target.value } : x))} />
+            <input className="input" aria-label="Percent" placeholder="%" inputMode="decimal" value={m.pct} onChange={e => setPlan(plan.map((x, j) => j === i ? { ...x, pct: Number(e.target.value) } : x))} />
+            <input className="input" aria-label="Due date or timing" placeholder="YYYY-MM-DD or timing" value={m.due || ''} onChange={e => setPlan(plan.map((x, j) => j === i ? { ...x, due: e.target.value } : x))} />
             <button className="iconbtn" aria-label="Remove" onClick={() => setPlan(plan.filter((_, j) => j !== i))}><Icon name="trash" /></button>
           </div>))}
-          <button className="btn sm" style={{ alignSelf: 'flex-start' }} onClick={() => setPlan([...plan, { milestone: '', pct: 0 }])}><Icon name="plus" />Add milestone</button></div></div>
+          <button className="btn sm" style={{ alignSelf: 'flex-start' }} onClick={() => setPlan([...plan, { milestone: '', pct: 0, due: '' }])}><Icon name="plus" />Add milestone</button></div><p className="hint" style={{ margin: '8px 0 0' }}>Use YYYY-MM-DD for automatic buyer payment reminders. You can also enter a timing such as “on slab completion.”</p></div>
       <button className="btn sun" style={{ alignSelf: 'flex-start' }} disabled={total !== 100} onClick={() => save({ rate_sqft: Number(rate), charges: Object.fromEntries(Object.entries(c).filter(([k]) => k !== 'gst_pct').map(([k, v]) => [k, Number(v)])), payment_plan: plan })}>Save pricing</button>
       <p className="hint" style={{ margin: 0 }}>Price changes apply to available units immediately. Existing bookings keep their agreed value.</p>
     </div></div>
@@ -313,15 +314,39 @@ function Media({ p, say, reload, save }) {
 }
 
 function Updates({ p, say, reload }) {
+  const mediaInput = useRef(null);
   const [f, setF] = useState({
     title: '',
     body: '',
     tower_id: '',
     stage_name: 'Superstructure (Slab Casting)',
     progress_pct: 50,
-    media_url: ''
+    media_url: '',
+    next_milestone: '',
+    next_milestone_date: ''
   });
   const [busy, setBusy] = useState(false);
+  const [mediaBusy, setMediaBusy] = useState(false);
+
+  const uploadUpdateMedia = async files => {
+    if (!files?.length) return;
+    if ([...files].some(file => !file.type.startsWith('image/') && !file.type.startsWith('video/'))) {
+      say('Choose image or video files only');
+      return;
+    }
+    setMediaBusy(true);
+    try {
+      const form = new FormData();
+      [...files].forEach(file => form.append('files', file));
+      const rows = await api.post(`/api/projects/${p.id}/update-media`, form);
+      const uploadedUrls = rows.map(row => row.url);
+      setF(previous => ({ ...previous, media_url: [previous.media_url, ...uploadedUrls].filter(Boolean).join('\n') }));
+      say(`${uploadedUrls.length} construction media file(s) uploaded and attached`);
+    } catch (error) {
+      say(error.message);
+    }
+    setMediaBusy(false);
+  };
 
   const STAGES = [
     'Excavation & Raft Foundation',
@@ -351,7 +376,9 @@ function Updates({ p, say, reload }) {
         tower_id: '',
         stage_name: 'Superstructure (Slab Casting)',
         progress_pct: 50,
-        media_url: ''
+        media_url: '',
+        next_milestone: '',
+        next_milestone_date: ''
       });
       reload();
     } catch (e) {
@@ -419,9 +446,22 @@ function Updates({ p, say, reload }) {
           <textarea id="pu-b" className="textarea" rows={2} placeholder="e.g. Cube test strength verified by site engineer. Shuttering started for 8th floor." value={f.body} onChange={e => setF({ ...f, body: e.target.value })} />
         </Field>
 
-        <Field label="Verified Photo / Video Links (comma or newline separated)" id="pu-m">
-          <input id="pu-m" className="input" placeholder="https://example.com/photo1.jpg, https://example.com/site-video.mp4" value={f.media_url} onChange={e => setF({ ...f, media_url: e.target.value })} />
+        <Field label="Progress Photos & Videos" id="pu-m">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <input id="pu-m" className="input" placeholder="Paste verified media links, separated by commas or new lines" value={f.media_url} onChange={e => setF({ ...f, media_url: e.target.value })} />
+            <input ref={mediaInput} type="file" hidden multiple accept="image/*,video/mp4,video/quicktime,video/webm" onChange={e => { uploadUpdateMedia(e.target.files); e.target.value = ''; }} />
+            <button type="button" className="btn sm" style={{ alignSelf: 'flex-start' }} disabled={mediaBusy} onClick={() => mediaInput.current?.click()}><Icon name="upload" />{mediaBusy ? 'Uploading…' : 'Upload photos or videos'}</button>
+          </div>
         </Field>
+
+        <div className="kgrid">
+          <Field label="Next Expected Milestone" id="pu-next">
+            <input id="pu-next" className="input" maxLength={160} placeholder="e.g. 8th floor slab casting" value={f.next_milestone} onChange={e => setF({ ...f, next_milestone: e.target.value })} />
+          </Field>
+          <Field label="Expected Date" id="pu-next-date">
+            <input id="pu-next-date" className="input" type="date" value={f.next_milestone_date} onChange={e => setF({ ...f, next_milestone_date: e.target.value })} />
+          </Field>
+        </div>
 
         <button className="btn sun" style={{ alignSelf: 'flex-start' }} disabled={busy || !f.title} onClick={post}>
           {busy ? 'Publishing…' : 'Publish Verified Update to Buyers'}
@@ -442,16 +482,20 @@ function Updates({ p, say, reload }) {
                     {u.stage_name && <span className="visit-badge" style={{ background: 'rgba(245,158,11,0.1)', color: '#b45309', borderColor: 'transparent' }}>{u.stage_name}</span>}
                     {u.progress_pct > 0 && <span className="visit-badge">{u.progress_pct}%</span>}
                   </div>
+                  {u.next_milestone && <span className="portal-next-stage">Next: {u.next_milestone}{u.next_milestone_date ? ` · ${new Date(u.next_milestone_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}` : ''}</span>}
                   {u.body && <span className="muted" style={{ display: 'block', margin: '4px 0', fontSize: 13 }}>{u.body}</span>}
-                  {u.media_urls?.length > 0 && (
+                  {(u.media_urls?.length > 0 || u.media_url) && (
                     <div className="progress-gallery" style={{ marginTop: 6, marginBottom: 6 }}>
-                      {u.media_urls.map((img, i) => (
-                        <a key={i} href={img} target="_blank" rel="noreferrer">
-                          <img src={img} alt="site update" className="progress-thumb" onError={e => { e.target.style.display = 'none'; }} />
-                        </a>
+                      {(u.media_urls?.length ? u.media_urls : [u.media_url]).map((media, i) => (
+                        <div key={i} className="progress-media">
+                          {/\.(mp4|mov|webm|m4v)(?:[?#]|$)/i.test(media)
+                            ? <video src={media} className="progress-thumb" controls playsInline preload="metadata" aria-label={`Construction video update ${i + 1}`} />
+                            : <a href={media} target="_blank" rel="noreferrer"><img src={media} alt={`Construction progress ${i + 1}`} className="progress-thumb" onError={e => { e.target.style.display = 'none'; }} /></a>}
+                        </div>
                       ))}
                     </div>
                   )}
+                  <small className="muted">Shared {new Date(u.created_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</small>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
                     <small className="muted">{date(u.created_at)}</small>
                     <button className="linkbtn" style={{ color: '#ef4444', fontSize: 11.5 }} onClick={() => removeUpdate(u.id)}>Delete</button>

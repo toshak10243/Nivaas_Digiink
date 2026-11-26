@@ -43,7 +43,7 @@ export default function Bookings({ me, say, go, params }) {
 }
 
 export function scheduleWithPaid(b) {
-  let left = b.paid ?? b.payments.reduce((a, p) => a + p.amount, 0);
+  let left = Number(b.paid ?? b.payments.reduce((a, p) => a + Number(p.amount || 0), 0));
   return b.schedule.map(m => { const got = Math.min(m.amount, Math.max(0, left)); left -= got; return { ...m, got, state: got >= m.amount ? 'paid' : got > 0 ? 'part' : 'due' }; });
 }
 
@@ -51,14 +51,28 @@ function BookingDrawer({ id, me, say, onClose, onChange }) {
   const [b, reload] = useLoad(() => api.get('/api/bookings/' + id), [id]);
   const [pay, setPay] = useState({ amount: '', mode: 'NEFT', ref: '', milestone: '' });
   const [docModal, setDocModal] = useState(null);
+  const [documentCategory, setDocumentCategory] = useState('agreement');
+  const [documentsBusy, setDocumentsBusy] = useState(false);
   if (!b) return <Drawer title="Loading…" onClose={onClose}><Loading /></Drawer>;
   const admin = me.user.role === 'admin';
-  const paid = b.payments.reduce((a, p) => a + p.amount, 0);
+  const paid = b.payments.reduce((a, p) => a + Number(p.amount || 0), 0);
   const sched = scheduleWithPaid({ ...b, paid });
   const next = sched.find(m => m.state !== 'paid');
   const refresh = () => { reload(); onChange(); };
   const record = async () => { try { await api.post(`/api/bookings/${b.id}/payments`, { ...pay, amount: Number(pay.amount), milestone: pay.milestone || next?.milestone }); setPay({ amount: '', mode: 'NEFT', ref: '', milestone: '' }); say('Payment recorded. The buyer is notified.'); refresh(); } catch (e) { say(e.message); } };
   const status = async s => { try { await api.patch('/api/bookings/' + b.id, { status: s }); say('Booking updated'); refresh(); } catch (e) { say(e.message); } };
+  const uploadDocuments = async event => {
+    const files = [...(event.target.files || [])];
+    if (!files.length) return;
+    const form = new FormData();
+    form.append('category', documentCategory);
+    files.forEach(file => form.append('files', file));
+    setDocumentsBusy(true);
+    try { await api.post('/api/bookings/' + b.id + '/documents', form); say('Buyer documents shared'); refresh(); }
+    catch (error) { say(error.message); }
+    setDocumentsBusy(false);
+    event.target.value = '';
+  };
 
   return (
     <Drawer title={`${b.unit_no} · ${b.customer_name}`} sub={`${b.project_name} · ${b.type_name} · booked ${date(b.booking_date)}`} onClose={onClose} actions={<Pill s={b.status} />}>
@@ -111,6 +125,23 @@ function BookingDrawer({ id, me, say, onClose, onChange }) {
           </button>
         </div>
       ))}</div>}
+
+      <div className="card" style={{ marginTop: 14, boxShadow: 'none' }}>
+        <div className="card-b" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <b>Buyer documents</b>
+          {b.documents?.length ? b.documents.map(document => <a key={document.id} className="minirow" href={document.url} target="_blank" rel="noreferrer"><Icon name="file" /><span style={{ flex: 1 }}>{document.title}<small className="muted"> · {document.category}</small></span><Icon name="download" /></a>) : <span className="muted">No buyer documents uploaded yet.</span>}
+          {admin && <div className="inline-actions">
+            <select className="select" aria-label="Document category" value={documentCategory} onChange={event => setDocumentCategory(event.target.value)}>
+              <option value="allotment">Allotment</option><option value="agreement">Agreement</option><option value="payment">Payment</option>
+              <option value="noc">NOC</option><option value="identity">Identity</option><option value="registry">Registry</option><option value="other">Other</option>
+            </select>
+            <label className="btn sm" style={{ cursor: documentsBusy ? 'wait' : 'pointer' }}>
+              <Icon name="upload" />{documentsBusy ? 'Uploading…' : 'Upload documents'}
+              <input type="file" accept="application/pdf,image/*" multiple disabled={documentsBusy} onChange={uploadDocuments} style={{ display: 'none' }} />
+            </label>
+          </div>}
+        </div>
+      </div>
 
       {/* Feature 10: AI Registry Day Manager */}
       <RegistryDayManager b={b} me={me} say={say} refresh={refresh} />

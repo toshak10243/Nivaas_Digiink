@@ -4,6 +4,7 @@ import { settingsOf } from '../settings.js';
 import { notify, logLead } from './notify.js';
 import * as meta from './meta.js';
 import { config } from '../config.js';
+import { eligibleAssignees } from '../lib/lead-routing.js';
 
 const OPEN = `('new','contacted','qualified','visit_scheduled','visit_done','negotiation')`;
 
@@ -18,14 +19,8 @@ export async function pickAssignee(lead, { exclude = [] } = {}) {
        (SELECT max(assigned_at) FROM leads l WHERE l.assigned_to = u.id) AS last_at
      FROM users u WHERE u.org_id = $1 AND u.active AND u.role = ANY($2)`, [lead.org_id, roles]);
   if (project?.sales_pool?.length) people = people.filter(p => project.sales_pool.includes(p.id) || p.role === 'broker');
-  people = people.filter(p => !exclude.includes(p.id));
+  people = eligibleAssignees(people, { respectAvailability: s.respect_availability, exclude });
   if (!people.length) return null;
-  if (s.respect_availability) {
-    const here = people.filter(p => (p.profile?.availability || 'available') !== 'away');
-    // nobody around → prefer agents whose AI twin will cover for them
-    const covered = people.filter(p => (p.profile?.ai_twin?.mode || 'away') !== 'off');
-    people = here.length ? here : covered.length ? covered : people;
-  }
   const byTime = (a, b) => new Date(a.last_at || 0) - new Date(b.last_at || 0);
   people.sort(s.strategy === 'round_robin' ? byTime : (a, b) => a.load - b.load || byTime(a, b));
   return people[0];

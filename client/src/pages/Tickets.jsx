@@ -11,7 +11,7 @@ export default function Tickets({ me, say, go, params }) {
   const [rows, reload] = useLoad(() => api.get('/api/tickets'), []);
   const [f, setF] = useState('active');
   const [raise, setRaise] = useState(false);
-  if (!rows) return <div className="page"><Loading /></div>;
+  if (!rows) return <div className="page ticket-loading" aria-busy="true" aria-label="Loading complaints"><Loading /></div>;
   const shown = rows.filter(t => f === 'all' || (f === 'active' ? ['open', 'in_progress'].includes(t.status) : f === 'late' ? ['open', 'in_progress'].includes(t.status) && new Date(t.sla_due_at) < Date.now() : f === 'mine' ? t.assigned_to === me.user.id : t.status === f));
   const late = rows.filter(t => ['open', 'in_progress'].includes(t.status) && new Date(t.sla_due_at) < Date.now()).length;
 
@@ -21,15 +21,22 @@ export default function Tickets({ me, say, go, params }) {
         <p>{role === 'customer' ? 'Raise any problem with your home, with photos. Our team responds within 24 hours.' : `Every complaint has a 24-hour SLA (6 h if urgent). ${late ? late + ' past SLA right now.' : 'All within SLA.'}`}</p></div>
         {role === 'customer' && <button className="btn sun" onClick={() => setRaise(true)}><Icon name="camera" />Raise a complaint</button>}</div>
       {role !== 'customer' && <div className="invbar"><Seg value={f} onChange={setF} label="Filter" options={[['active', 'Active'], ['late', `Past SLA · ${late}`], ...(role === 'maintenance' ? [['mine', 'Mine']] : []), ['resolved', 'Resolved'], ['all', 'All']]} /></div>}
-      {shown.length === 0 ? <Empty icon="wrench" title={role === 'customer' ? 'No complaints. Enjoy your home!' : 'Nothing in this list'} /> : (
+      {shown.length === 0 ? <Empty icon="wrench" title={role === 'customer' ? 'No complaints yet' : 'Nothing in this list'}>{role === 'customer' ? 'If you need help with your home, raise a complaint and track the response here.' : 'Try a different complaint filter.'}</Empty> : (
         <div className="tklist">{shown.map(t => {
           const active = ['open', 'in_progress'].includes(t.status), lateNow = active && new Date(t.sla_due_at) < Date.now();
+          const lastUpdate = String(t.last_update || '').replace(/\s+/g, ' ').slice(0, 110);
           return (
             <button key={t.id} className={'tkcard' + (lateNow ? ' late' : '')} onClick={() => go('tickets/' + t.id)}>
               {t.thumb ? <img src={api.media(t.thumb)} alt="" /> : <span className="tkicon"><Icon name="wrench" /></span>}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="tk-top"><span className="mono muted">#{t.number}</span><b>{t.title}</b></div>
-                <div className="muted" style={{ fontSize: 13 }}>{catLabel(t.category)} · {t.unit_no} {t.project_name}{role !== 'customer' ? ` · ${t.customer_name}` : ''}{t.assigned_name ? ` · ${t.assigned_name}` : ''}</div>
+                <div className="muted" style={{ fontSize: 13 }}>{catLabel(t.category)} · {t.unit_no} {t.project_name}{role !== 'customer' ? ` · ${t.customer_name}` : ''}</div>
+                {role === 'customer' && <div className="ticket-card-meta">
+                  <span>{t.assigned_name ? `Assigned to ${t.assigned_name}` : 'Waiting for a team member'}</span>
+                  <span>Updated {t.last_update_at ? dateTime(t.last_update_at) : dateTime(t.created_at)}{lastUpdate ? ` · ${lastUpdate}` : ''}</span>
+                  {active && <span>Expected response by {dateTime(t.sla_due_at)}</span>}
+                </div>}
+                {role !== 'customer' && t.assigned_name && <small className="muted">Assigned to {t.assigned_name}</small>}
               </div>
               <div className="tk-right"><Pill s={t.status} />{t.priority === 'urgent' && <Pill s="urgent" />}{active ? <span className={'sla' + (lateNow ? ' late' : '')}><Icon name="clock" />{until(t.sla_due_at)}</span> : <span className="time">{ago(t.created_at)} ago</span>}</div>
             </button>
@@ -99,6 +106,11 @@ function TicketDrawer({ id, me, say, onClose, onChange }) {
   return (
     <Drawer title={`#${t.number} · ${t.title}`} sub={`${catLabel(t.category)} · ${t.unit_no}, ${t.project_name} · raised ${dateTime(t.created_at)}`} onClose={onClose} actions={<Pill s={t.status} />}>
       {active && <div className={'slabar' + (new Date(t.sla_due_at) < Date.now() ? ' late' : '')}><Icon name="clock" /><span><b>{until(t.sla_due_at)}</b> to respond (SLA {t.priority === 'urgent' ? '6' : '24'} h)</span></div>}
+      {role === 'customer' && <div className="ticket-buyer-summary">
+        <div><small>Assigned contact</small><b>{t.assigned_name || 'Support team'}</b>{t.assigned_phone && <a href={`tel:+${String(t.assigned_phone).replace(/\D/g, '')}`}>{phone(t.assigned_phone)}</a>}</div>
+        <div><small>{active ? 'Expected response' : 'Last updated'}</small><b>{active ? dateTime(t.sla_due_at) : dateTime(t.last_update_at || t.resolved_at || t.created_at)}</b>{active && <span className={'sla' + (new Date(t.sla_due_at) < Date.now() ? ' late' : '')}>{until(t.sla_due_at)}</span>}</div>
+        <div><small>Latest update</small><b>{String(t.last_update || 'Complaint received; our team will follow up.').replace(/\s+/g, ' ').slice(0, 180)}</b></div>
+      </div>}
       {role !== 'customer' && <div className="minirow"><Icon name="user" /><span style={{ flex: 1 }}>{t.customer_name} · <a className="mono" href={`tel:+${String(t.customer_phone).replace(/\D/g, '')}`}>{phone(t.customer_phone)}</a></span></div>}
       {t.description && <p style={{ margin: 0 }}>{t.description}</p>}
       {t.files.length > 0 && <div className="tkphotos">{t.files.map(f => <button key={f.id} onClick={() => setZoom(api.media(f.url))}><img src={api.media(f.url)} alt="Complaint photo" /></button>)}</div>}
