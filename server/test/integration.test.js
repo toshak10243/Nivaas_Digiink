@@ -2,7 +2,7 @@ import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -74,7 +74,7 @@ before(async () => {
   scopedUrl = scoped.toString();
   process.env.DATABASE_URL = scopedUrl;
   process.env.JWT_SECRET = 'integration-test-secret-with-32-characters';
-  process.env.META_APP_SECRET = '';
+  process.env.META_APP_SECRET = 'integration-meta-app-secret-with-at-least-32-chars';
   process.env.GEMINI_API_KEY = '';
   process.env.NODE_ENV = 'test';
   process.env.WHATSAPP_WEBHOOK_ENABLED = 'true';
@@ -140,7 +140,7 @@ before(async () => {
   baseUrl = `http://127.0.0.1:${port}`;
   serverProcess = spawn(process.execPath, ['src/index.js'], {
     cwd: path.resolve(here, '..'),
-    env: { ...process.env, PORT: String(port), DATABASE_URL: scopedUrl, UPLOAD_DIR: uploadDir, NODE_ENV: 'test', META_APP_SECRET: '', GEMINI_API_KEY: '' },
+    env: { ...process.env, PORT: String(port), DATABASE_URL: scopedUrl, UPLOAD_DIR: uploadDir, NODE_ENV: 'test', META_APP_SECRET: process.env.META_APP_SECRET, GEMINI_API_KEY: '' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   serverProcess.stdout.on('data', chunk => { serverOutput += chunk.toString(); });
@@ -372,6 +372,11 @@ test('API regression flows: authorization, privacy, booking, payments, tickets, 
   assert.equal(brokerLeads.data[0].phone, '••••••0003');
   assert.equal((await api(`/api/leads/${fixtures.leads.brokerOne}`, { token: tokens.brokerOne })).data.phone, '••••••0003');
 
+  await fixturePool.query(`UPDATE leads SET email = 'buyer-private@example.test' WHERE id = $1`, [fixtures.leads.brokerOne]);
+  const privateBrokerLead = await api(`/api/leads/${fixtures.leads.brokerOne}`, { token: tokens.brokerOne });
+  assert.equal(privateBrokerLead.data.email, null, 'broker lead details must not return buyer email');
+  assert.equal((await api(`/api/leads/${fixtures.leads.brokerOne}`, { token: tokens.admin })).data.email, 'buyer-private@example.test', 'admin retains buyer contact details');
+
   const smartLead = await api('/api/leads', {
     token: tokens.admin, method: 'POST',
     body: {
@@ -407,11 +412,18 @@ test('API regression flows: authorization, privacy, booking, payments, tickets, 
   });
   assert.equal(ignoredLeadField.response.status, 400);
   const brokerCreatedLead = await api('/api/leads', {
-    token: tokens.brokerOne, method: 'POST', body: { name: 'Broker Privacy Check', phone: '919910000099' },
+    token: tokens.brokerOne, method: 'POST', body: { name: 'Broker Privacy Check', phone: '919910000099', email: 'new-buyer@example.test' },
   });
   assert.equal(brokerCreatedLead.response.status, 200);
   assert.equal(brokerCreatedLead.data.phone, '••••••0099');
-  assert.equal((await fixturePool.query('SELECT phone FROM leads WHERE id = $1', [brokerCreatedLead.data.id])).rows[0].phone, '919910000099');
+  assert.equal(brokerCreatedLead.data.email, null);
+  const brokerStoredLead = (await fixturePool.query('SELECT phone, email FROM leads WHERE id = $1', [brokerCreatedLead.data.id])).rows[0];
+  assert.equal(brokerStoredLead.phone, '919910000099');
+  assert.equal(brokerStoredLead.email, 'new-buyer@example.test', 'privacy filtering must not discard stored contact details');
+  const brokerEditedLead = await api(`/api/leads/${brokerCreatedLead.data.id}`, {
+    token: tokens.brokerOne, method: 'PATCH', body: { email: 'updated-buyer@example.test' },
+  });
+  assert.equal(brokerEditedLead.data.email, null, 'broker lead update responses must also suppress buyer email');
 
   const brokerVisit = (await fixturePool.query(
     `INSERT INTO site_visits (org_id,lead_id,project_id,agent_id,scheduled_at) VALUES ($1,$2,$3,$4,now() + interval '1 day') RETURNING id`,
@@ -449,6 +461,34 @@ test('API regression flows: authorization, privacy, booking, payments, tickets, 
   const brokerDashboard = await api('/api/dashboard', { token: tokens.brokerOne });
   assert.equal(brokerDashboard.data.visits.find(v => v.id === brokerVisit.id).phone, '••••••0003');
 
+  const workflowLead = (await fixturePool.query(
+    `INSERT INTO leads (org_id,project_id,name,phone,source,stage,assigned_to) VALUES ($1,$2,'Visit Workflow Buyer','919911000010','whatsapp','contacted',$3) RETURNING id`,
+    [fixtures.org.id, fixtures.project.id, fixtures.users.salesOne.id],
+  )).rows[0].id;
+  const pendingVisit = (await fixturePool.query(
+    `INSERT INTO site_visits (org_id,lead_id,project_id,agent_id,status,source,scheduled_by,confirmation_note)
+     VALUES ($1,$2,$3,$4,'to_confirm','ai',$4,'Customer asked to visit') RETURNING id`,
+    [fixtures.org.id, workflowLead, fixtures.project.id, fixtures.users.salesOne.id],
+  )).rows[0];
+  const pendingVisits = await api('/api/visits?status=to_confirm', { token: tokens.admin });
+  assert.equal(pendingVisits.response.status, 200);
+  assert.equal(pendingVisits.data.find(v => v.id === pendingVisit.id)?.status, 'to_confirm', 'undated requests should be visible in the To confirm queue');
+  const fixedVisitTime = new Date(Date.now() + 4 * 86400000).toISOString();
+  const fixedVisit = await api(`/api/visits/${pendingVisit.id}`, {
+    token: tokens.salesOne, method: 'PATCH', body: { status: 'rescheduled', reschedule_at: fixedVisitTime },
+  });
+  assert.equal(fixedVisit.response.status, 200, JSON.stringify(fixedVisit.data));
+  assert.equal(fixedVisit.data.status, 'scheduled');
+  assert.equal(new Date(fixedVisit.data.scheduled_at).toISOString(), fixedVisitTime);
+  assert.equal((await fixturePool.query('SELECT stage FROM leads WHERE id = $1', [workflowLead])).rows[0].stage, 'visit_scheduled');
+  const repeatedSlotTime = new Date(Date.now() + 5 * 86400000).toISOString();
+  const once = await api(`/api/leads/${workflowLead}/visits`, { token: tokens.salesOne, method: 'POST', body: { scheduled_at: repeatedSlotTime } });
+  const twice = await api(`/api/leads/${workflowLead}/visits`, { token: tokens.salesOne, method: 'POST', body: { scheduled_at: repeatedSlotTime } });
+  assert.equal(once.response.status, 200);
+  assert.equal(twice.response.status, 200);
+  assert.equal(once.data.id, twice.data.id, 'repeated requests for one slot should reuse the same visit record');
+  assert.equal(Number((await fixturePool.query(`SELECT count(*) FROM site_visits WHERE lead_id = $1 AND scheduled_at = $2 AND status IN ('scheduled','confirmed')`, [workflowLead, repeatedSlotTime])).rows[0].count), 1);
+
   await fixturePool.query('UPDATE users SET phone = $2 WHERE id = $1', [fixtures.users.customerOne.id, '919920000009']);
   const brokerBooking = (await fixturePool.query(
     `INSERT INTO bookings (org_id,unit_id,customer_id,sold_by,broker_id,deal_value,status) VALUES ($1,$2,$3,$4,$5,100000,'cancelled') RETURNING id`,
@@ -458,6 +498,75 @@ test('API regression flows: authorization, privacy, booking, payments, tickets, 
   assert.equal(brokerBookings.data.find(b => b.id === brokerBooking.id).customer_phone, '••••••0009');
   const brokerBookingDetail = await api(`/api/bookings/${brokerBooking.id}`, { token: tokens.brokerOne });
   assert.equal(brokerBookingDetail.data.customer_phone, '••••••0009');
+  assert.equal(brokerBookingDetail.data.customer_email, null, 'broker booking details must not return buyer email');
+
+  await fixturePool.query(
+    `INSERT INTO commissions (org_id, booking_id, user_id, kind, basis, amount, status, paid_on) VALUES
+      ($1,$2,$3,'broker_commission','2% of deal',2000,'paid',current_date),
+      ($1,$2,$4,'broker_commission','2% of deal',2000,'pending',NULL)`,
+    [fixtures.org.id, brokerBooking.id, fixtures.users.brokerOne.id, fixtures.users.brokerTwo.id],
+  );
+  const ownCommission = await api('/api/commissions', { token: tokens.brokerOne });
+  assert.equal(ownCommission.response.status, 200);
+  assert.equal(ownCommission.data.length, 1);
+  assert.equal(ownCommission.data[0].user_id, fixtures.users.brokerOne.id, 'commission ledger must be limited to the signed-in broker');
+  assert.equal(ownCommission.data[0].status, 'paid');
+  const otherBrokerCommission = await api('/api/commissions', { token: tokens.brokerTwo });
+  assert.equal(otherBrokerCommission.data.length, 1);
+  assert.equal(otherBrokerCommission.data[0].user_id, fixtures.users.brokerTwo.id);
+
+  const campaignTypeId = (await fixturePool.query(`SELECT id FROM unit_types WHERE project_id = $1 ORDER BY bhk LIMIT 1`, [fixtures.project.id])).rows[0].id;
+  const campaignUnit = (await fixturePool.query(
+    `INSERT INTO units (project_id,unit_type_id,unit_no,floor) VALUES ($1,$2,'T-104',1) RETURNING id`,
+    [fixtures.project.id, campaignTypeId],
+  )).rows[0].id;
+  const campaignLead = (await fixturePool.query(
+    `INSERT INTO leads (org_id,project_id,name,phone,email,source,source_ref,stage,assigned_to,created_at,updated_at)
+     VALUES ($1,$2,'Campaign Buyer','919933000001','campaign-buyer@example.test','share_link',$3,'qualified',$4,now(),now()) RETURNING id`,
+    [fixtures.org.id, fixtures.project.id, fixtures.share.token, fixtures.users.salesOne.id],
+  )).rows[0].id;
+  await fixturePool.query(
+    `INSERT INTO site_visits (org_id,lead_id,project_id,agent_id,scheduled_at,status)
+     VALUES ($1,$2,$3,$4,now() - interval '1 day','done')`,
+    [fixtures.org.id, campaignLead, fixtures.project.id, fixtures.users.salesOne.id],
+  );
+  const campaignBooking = await api('/api/bookings', {
+    token: tokens.admin, method: 'POST', body: {
+      unit_id: campaignUnit, customer_name: 'Campaign Buyer', customer_email: 'campaign-buyer@example.test',
+      customer_phone: '919933000001', booking_amount: 0,
+    },
+  });
+  assert.equal(campaignBooking.response.status, 200, JSON.stringify(campaignBooking.data));
+  assert.equal(campaignBooking.data.lead_id, campaignLead, 'booking should inherit a unique source lead when no lead is selected');
+  await fixturePool.query(
+    `INSERT INTO leads (org_id,project_id,name,phone,source,stage,created_at,updated_at)
+     VALUES ($1,$2,'Stalled Lead','919933000002','leadsathi','contacted',now() - interval '20 days',now() - interval '8 days')`,
+    [fixtures.org.id, fixtures.project.id],
+  );
+  const conversionReport = await api('/api/reports/conversions?days=90', { token: tokens.admin });
+  assert.equal(conversionReport.response.status, 200, JSON.stringify(conversionReport.data));
+  const campaignRow = conversionReport.data.sources.find(row => row.source === 'Shared kit' && row.project === 'Test Residences');
+  assert.ok(campaignRow, 'source report should include the originating shared campaign');
+  assert.equal(campaignRow.visited, 1);
+  assert.equal(campaignRow.booked, 1);
+  assert.equal(conversionReport.data.projects.find(row => row.project === 'Test Residences').booked, 1);
+  assert.ok(conversionReport.data.stuck.some(row => row.stage === 'contacted' && row.leads >= 1), 'stuck stage report should include old active leads');
+  const analyticsReport = await api(`/api/reports/analytics?period=year&year=${new Date().getFullYear()}&project=${fixtures.project.id}&source=share_link&campaign=${fixtures.share.token}`, { token: tokens.admin });
+  assert.equal(analyticsReport.response.status, 200, JSON.stringify(analyticsReport.data));
+  assert.equal(Number(analyticsReport.data.totals.leads), 1, 'project, source, and campaign filters should count the matching lead');
+  assert.equal(Number(analyticsReport.data.totals.visits_completed), 1);
+  assert.equal(Number(analyticsReport.data.totals.sales_units), 1);
+  assert.equal(Number(analyticsReport.data.projects[0].bookings), 1);
+  const combinedFiltersReport = await api(`/api/reports/analytics?period=year&year=${new Date().getFullYear()}&project=${fixtures.project.id}&salesperson=${fixtures.users.salesOne.id}&broker=${fixtures.users.brokerOne.id}&source=share_link&campaign=${fixtures.share.token}`, { token: tokens.admin });
+  assert.equal(combinedFiltersReport.response.status, 200, JSON.stringify(combinedFiltersReport.data));
+  assert.equal((await api('/api/reports/analytics?period=custom&from=2026-02-30&to=2026-03-01', { token: tokens.admin })).response.status, 400);
+  const dashboardAnalytics = await api('/api/dashboard/analytics?months=6', { token: tokens.admin });
+  assert.equal(dashboardAnalytics.response.status, 200, JSON.stringify(dashboardAnalytics.data));
+  assert.equal(dashboardAnalytics.data.rows.length, 6);
+  const dashboardAnalyticsYear = await api('/api/dashboard/analytics?months=12', { token: tokens.admin });
+  assert.equal(dashboardAnalyticsYear.data.rows.length, 12);
+  assert.equal((await api('/api/reports/conversions?days=45', { token: tokens.admin })).response.status, 400);
+  assert.equal((await api('/api/reports/conversions', { token: tokens.brokerOne })).response.status, 403);
 
   const fallbackDraft = await api(`/api/leads/${fixtures.leads.salesOne}/ai-objection`, {
     token: tokens.salesOne, method: 'POST', body: { objection: 'What is the confirmed possession date?' },
@@ -649,6 +758,14 @@ test('API regression flows: authorization, privacy, booking, payments, tickets, 
   assert.equal(validMediaUpload.response.status, 200, JSON.stringify(validMediaUpload.data));
   assert.equal(validMediaUpload.data[0].kind, 'image');
 
+  const brokerProjectKit = await api('/api/share', {
+    token: tokens.brokerOne, method: 'POST', body: { project_id: fixtures.project.id },
+  });
+  assert.equal(brokerProjectKit.response.status, 200);
+  assert.match(brokerProjectKit.data.url, /\/s\/[a-f0-9-]+$/i, 'broker share action must create a public customer-facing link');
+  const brokerShareList = await api('/api/share', { token: tokens.brokerOne });
+  assert.ok(brokerShareList.data.some(link => link.token === brokerProjectKit.data.token));
+  assert.ok(brokerShareList.data.every(link => link.created_by === fixtures.users.brokerOne.id), 'brokers may only view their own shared links');
   const publicPage = await api(`/p/${fixtures.share.token}`);
   assert.equal(publicPage.response.status, 200);
   const publicUnit = publicPage.data.units.find(x => x.id === fixtures.units['T-102']);
@@ -695,4 +812,55 @@ test('API regression flows: authorization, privacy, booking, payments, tickets, 
 
   const invalidWebhook = await api('/webhooks/whatsapp', { method: 'POST', body: { entry: [] } });
   assert.equal(invalidWebhook.response.status, 401);
+
+  // WhatsApp consent and send guards must work before any Meta API call is made.
+  const consentLead = await api('/api/leads', {
+    token: tokens.admin, method: 'POST',
+    body: { name: 'WhatsApp Consent Lead', phone: '919950000001', whatsapp_consent: 'opted_in' },
+  });
+  assert.equal(consentLead.response.status, 200);
+  assert.equal(consentLead.data.whatsapp_consent, 'opted_in');
+  const optedOut = await api(`/api/leads/${consentLead.data.id}`, {
+    token: tokens.admin, method: 'PATCH', body: { whatsapp_consent: 'opted_out' },
+  });
+  assert.equal(optedOut.response.status, 200);
+  assert.equal(optedOut.data.whatsapp_consent, 'opted_out');
+
+  const waNumber = (await fixturePool.query(
+    `INSERT INTO wa_numbers (org_id, phone_number_id, display, access_token) VALUES ($1,'integration-phone','Test Number','unused-token') RETURNING id`,
+    [fixtures.org.id],
+  )).rows[0];
+  const chat = await api('/api/chats', {
+    token: tokens.admin, method: 'POST', body: { lead_id: consentLead.data.id },
+  });
+  assert.equal(chat.response.status, 200);
+  const optOutTemplate = await api(`/api/chats/${chat.data.id}/templates`, {
+    token: tokens.admin, method: 'POST', body: { name: 'anything', language: 'en', parameters: [] },
+  });
+  assert.equal(optOutTemplate.response.status, 409);
+  const optOutFreeText = await api(`/api/chats/${chat.data.id}/messages`, {
+    token: tokens.admin, method: 'POST', body: { text: 'This must not be sent' },
+  });
+  assert.equal(optOutFreeText.response.status, 409);
+  const noWabaTemplates = await api(`/api/whatsapp/templates?wa_number_id=${waNumber.id}`, { token: tokens.admin });
+  assert.equal(noWabaTemplates.response.status, 502);
+
+  const trackedMessage = (await fixturePool.query(
+    `INSERT INTO chat_messages (chat_id,sender,body,ext_id,delivery_status) VALUES ($1,'agent','Status fixture','wamid.integration-status','accepted') RETURNING id`,
+    [chat.data.id],
+  )).rows[0];
+  const deliveryEvent = { entry: [{ changes: [{ value: { statuses: [{ id: 'wamid.integration-status', status: 'delivered' }] } }] }] };
+  const deliveryBody = JSON.stringify(deliveryEvent);
+  const signature = `sha256=${createHmac('sha256', process.env.META_APP_SECRET).update(deliveryBody).digest('hex')}`;
+  const deliveredWebhook = await api('/webhooks/whatsapp', {
+    method: 'POST', body: deliveryEvent, headers: { 'x-hub-signature-256': signature },
+  });
+  assert.equal(deliveredWebhook.response.status, 200);
+  let trackedStatus;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    trackedStatus = await fixturePool.query('SELECT delivery_status FROM chat_messages WHERE id = $1', [trackedMessage.id]);
+    if (trackedStatus.rows[0].delivery_status === 'delivered') break;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.equal(trackedStatus.rows[0].delivery_status, 'delivered');
 });

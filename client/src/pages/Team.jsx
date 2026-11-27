@@ -44,7 +44,7 @@ export default function Team({ say }) {
       )}
       {edit && <MemberModal user={edit} say={say} onClose={() => setEdit(null)} onDone={r => { setEdit(null); reload(); if (r?.temp_password) setCreated(r); }} />}
       {created && <Modal title={created.reset ? 'New password' : 'Login created'} onClose={() => setCreated(null)} footer={<button className="btn sun" onClick={() => setCreated(null)}>Done</button>}>
-        <p style={{ margin: 0 }}>Share these with <b>{created.name}</b> privately. They can change the password after logging in.</p>
+        <p style={{ margin: 0 }}>Share these with <b>{created.name}</b> privately. They must change this temporary password the first time they sign in.</p>
         <div className="sharebox"><span>Email <b className="mono">{created.email}</b></span><span>Password <b className="mono">{created.temp_password}</b></span></div>
       </Modal>}
     </div>
@@ -99,7 +99,7 @@ function MemberModal({ user, say, onClose, onDone }) {
         </div>
       </>}
       {role === 'maintenance' && <Field label="Handles (comma separated)" id="tm-sk" hint="e.g. plumbing, seepage, electrical"><input id="tm-sk" className="input" value={f.skills} onChange={set('skills')} /></Field>}
-      {isNew && <div className="note">A temporary password is generated. You will see it once, on the next screen.</div>}
+      {isNew && <div className="note">A temporary password is generated. You will see it once, and the user must change it on first sign-in.</div>}
     </Modal>
   );
 }

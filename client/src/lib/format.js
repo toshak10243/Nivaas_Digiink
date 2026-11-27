@@ -30,4 +30,4 @@ export const STAGES = [
   ['visit_done', 'Visited'], ['negotiation', 'Negotiation'], ['booked', 'Booked'], ['lost', 'Lost'],
 ];
 export const stageLabel = s => (STAGES.find(x => x[0] === s) || [s, titleCase(s)])[1];
-export const SOURCES = { leadsathi: 'LeadSathi AI', share_link: 'Shared link', broker: 'Broker', walk_in: 'Walk-in', manual: 'Manual', whatsapp: 'WhatsApp' };
+export const SOURCES = { leadsathi: 'LeadSathi AI', share_link: 'Shared link', broker: 'Broker', walk_in: 'Walk-in', manual: 'Manual', whatsapp: 'WhatsApp', meta_lead_ads: 'Meta Lead Ads' };

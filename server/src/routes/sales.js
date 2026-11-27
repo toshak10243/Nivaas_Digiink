@@ -5,22 +5,24 @@ import crypto from 'node:crypto';
 import { one, many, q, tx } from '../db.js';
 import { h, allow, fail } from '../lib/auth.js';
 import { costSheet, scheduleFor, inr } from '../lib/pricing.js';
-import { notify, logLead } from '../services/notify.js';
+import { notify, notifyAdminsOnce, logLead } from '../services/notify.js';
 import { assignLead } from '../services/routing.js';
+import { scheduleVisitOnce } from '../services/site-visits.js';
+import { parseEmployeeVisitConfirmation, visitMessageDetails } from '../services/visit-workflow.js';
 import * as meta from '../services/meta.js';
 import { config } from '../config.js';
 import { resolveObjection, generateHandoverBrief, generateVisitPassportData } from '../services/gemini.js';
 import { email as validEmail, phone as validPhone, number, date as dateValue, futureDateTime, oneOf, text, uuid } from '../lib/validate.js';
-import { maskPhoneField, maskPhoneRows } from '../lib/privacy.js';
+import { protectCustomerFields, protectCustomerRows } from '../lib/privacy.js';
 import { signPrivateUrl } from './private-files.js';
 import { prioritizeLead } from '../../../shared/lead-priority.js';
 
 const r = Router();
 const STAGES = ['new', 'contacted', 'qualified', 'visit_scheduled', 'visit_done', 'negotiation', 'booked', 'lost'];
 const TEMPERATURES = ['hot', 'warm', 'cold'];
-const LEAD_SOURCES = ['manual', 'walk_in', 'whatsapp', 'share_link', 'leadsathi', 'broker'];
-const LEAD_CREATE_FIELDS = ['name', 'phone', 'email', 'project_id', 'source', 'budget', 'config_pref', 'purpose', 'timeline', 'notes', 'stage', 'temperature', 'assigned_to', 'followup_at', 'followup_type', 'followup_note', 'auto_assign'];
-const LEAD_PATCH_FIELDS = ['name', 'email', 'budget', 'config_pref', 'purpose', 'timeline', 'notes', 'stage', 'temperature', 'project_id', 'unit_id', 'lost_reason', 'followup_at', 'followup_type', 'followup_note'];
+const LEAD_SOURCES = ['manual', 'walk_in', 'whatsapp', 'share_link', 'leadsathi', 'broker', 'meta_lead_ads'];
+const LEAD_CREATE_FIELDS = ['name', 'phone', 'email', 'project_id', 'source', 'budget', 'config_pref', 'purpose', 'timeline', 'notes', 'stage', 'temperature', 'assigned_to', 'followup_at', 'followup_type', 'followup_note', 'auto_assign', 'whatsapp_consent'];
+const LEAD_PATCH_FIELDS = ['name', 'email', 'budget', 'config_pref', 'purpose', 'timeline', 'notes', 'stage', 'temperature', 'project_id', 'unit_id', 'lost_reason', 'followup_at', 'followup_type', 'followup_note', 'whatsapp_consent'];
 
 /** sales see their own leads, brokers see leads they own or registered, admins see all */
 function scope(user, alias = 'l', start = 2) {
@@ -38,6 +40,28 @@ async function leadFor(user, id) {
 async function notifyBuyerForLeadVisit(orgId, leadId, body) {
   const buyers = await many(`SELECT DISTINCT customer_id FROM bookings WHERE org_id = $1 AND lead_id = $2 AND status <> 'cancelled' AND customer_id IS NOT NULL`, [orgId, leadId]);
   for (const buyer of buyers) await notify(orgId, buyer.customer_id, 'visit', body, '/portal');
+}
+async function sendVisitWhatsAppWhenAllowed(orgId, leadId, body) {
+  const chat = await one(`SELECT c.*, n.phone_number_id, n.access_token, l.phone, l.whatsapp_consent
+    FROM chats c JOIN wa_numbers n ON n.id = c.wa_number_id JOIN leads l ON l.id = c.lead_id
+    WHERE c.org_id = $1 AND c.lead_id = $2 AND l.whatsapp_consent <> 'opted_out'
+      AND c.last_customer_at > now() - interval '24 hours' ORDER BY c.last_customer_at DESC LIMIT 1`, [orgId, leadId]);
+  if (!chat) return false;
+  try {
+    const sent = await meta.sendText(chat, meta.normPhone(chat.phone), body);
+    await one(`INSERT INTO chat_messages (chat_id,sender,body,ext_id,delivery_status,status_updated_at)
+      VALUES ($1,'agent',$2,$3,'accepted',now()) RETURNING id`, [chat.id, body, sent?.messages?.[0]?.id || null]);
+    await q(`UPDATE chats SET last_agent_at = now(), pending_ai_at = NULL WHERE id = $1`, [chat.id]);
+    return true;
+  } catch (error) {
+    await one(`INSERT INTO chat_messages (chat_id,sender,body,delivery_status,delivery_error,status_updated_at)
+      VALUES ($1,'agent',$2,'failed',$3,now()) RETURNING id`, [chat.id, body, String(error.message).slice(0, 1000)]);
+    return false;
+  }
+}
+async function visitDetailsFor(orgId, projectId, scheduledAt) {
+  const project = projectId ? await one(`SELECT name, location, map_url FROM projects WHERE id = $1 AND org_id = $2`, [projectId, orgId]) : null;
+  return visitMessageDetails({ when: scheduledAt, projectName: project?.name, address: project?.location, mapUrl: project?.map_url });
 }
 async function assertOrgUser(id, org, roles) {
   if (!id) return null;
@@ -63,7 +87,70 @@ r.get('/leads', allow('admin', 'sales', 'broker'), h(async (req, res) => {
      WHERE l.org_id = $1${s.sql}${extra} ORDER BY l.updated_at DESC LIMIT 500`, vals);
   const prioritized = rows.map(lead => ({ ...lead, ...prioritizeLead(lead) }))
     .sort((a, b) => b.priority_score - a.priority_score || new Date(b.updated_at) - new Date(a.updated_at));
-  res.json(maskPhoneRows(prioritized, 'phone', req.user.role));
+  res.json(protectCustomerRows(prioritized, req.user.role));
+}));
+
+async function prepareLeadImport(rows, orgId) {
+  if (!Array.isArray(rows) || rows.length < 1 || rows.length > 250) throw fail(400, 'Upload between 1 and 250 lead rows at a time');
+  const allowed = new Set(['name', 'phone', 'email', 'project', 'budget', 'config_pref', 'source', 'campaign']);
+  const seen = new Set();
+  const prepared = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const input = rows[index];
+    const result = { row: index + 2, status: 'ready', name: '', phone: '', email: null, project_id: null, budget: null, config_pref: null, source: 'manual', campaign: null };
+    try {
+      if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !allowed.has(key))) throw fail(400, 'Unsupported or invalid row fields');
+      result.name = text(input.name, 'Name', { optional: false, max: 160 });
+      const rawPhone = validPhone(input.phone, 'Phone', { optional: false });
+      result.phone = meta.normPhone(rawPhone);
+      if (result.phone.length < 10 || result.phone.length > 15) throw fail(400, 'Enter a valid phone number');
+      result.email = input.email ? validEmail(input.email, 'Email', { optional: false }) : null;
+      result.source = input.source ? oneOf(input.source, 'Source', LEAD_SOURCES, { optional: false }) : 'manual';
+      result.budget = input.budget ? text(input.budget, 'Budget', { max: 100 }) : null;
+      result.config_pref = input.config_pref ? text(input.config_pref, 'Property preference', { max: 120 }) : null;
+      result.campaign = input.campaign ? text(input.campaign, 'Campaign', { max: 200 }) : null;
+      if (input.project) {
+        const projectName = text(input.project, 'Project', { optional: false, max: 160 });
+        const project = await one(`SELECT id FROM projects WHERE org_id=$1 AND lower(name)=lower($2)`, [orgId, projectName]);
+        if (!project) throw fail(400, `Project not found: ${projectName}`);
+        result.project_id = project.id;
+      }
+      if (seen.has(result.phone)) {
+        result.status = 'duplicate'; result.reason = 'Phone repeats in this file';
+      } else {
+        seen.add(result.phone);
+        const existing = await one(`SELECT id, name FROM leads WHERE org_id=$1 AND phone=$2 AND stage <> 'lost' ORDER BY created_at LIMIT 1`, [orgId, result.phone]);
+        if (existing) { result.status = 'duplicate'; result.reason = `Already in CRM${existing.name ? ` as ${existing.name}` : ''}`; result.existing_lead_id = existing.id; }
+      }
+    } catch (error) { result.status = 'invalid'; result.reason = error.message || 'Invalid row'; }
+    prepared.push(result);
+  }
+  return prepared;
+}
+
+r.post('/leads/import/preview', allow('admin'), h(async (req, res) => {
+  const prepared = await prepareLeadImport(req.body?.rows, req.user.org);
+  res.json({ rows: prepared, ready: prepared.filter(row => row.status === 'ready').length, duplicates: prepared.filter(row => row.status === 'duplicate').length, invalid: prepared.filter(row => row.status === 'invalid').length });
+}));
+
+r.post('/leads/import', allow('admin'), h(async (req, res) => {
+  const prepared = await prepareLeadImport(req.body?.rows, req.user.org);
+  const candidates = prepared.filter(row => row.status === 'ready');
+  const inserted = await tx(async ({ one: txOne }) => {
+    const created = [];
+    for (const row of candidates) {
+      await txOne(`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, [row.phone]);
+      const duplicate = await txOne(`SELECT id FROM leads WHERE org_id=$1 AND phone=$2 AND stage <> 'lost' LIMIT 1`, [req.user.org, row.phone]);
+      if (duplicate) continue;
+      const lead = await txOne(`INSERT INTO leads (org_id,name,phone,email,project_id,source,source_ref,budget,config_pref,stage,temperature)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'new','warm') RETURNING id`,
+      [req.user.org, row.name, row.phone, row.email, row.project_id, row.source, row.campaign, row.budget, row.config_pref]);
+      await txOne(`INSERT INTO lead_events (lead_id,actor_id,kind,body) VALUES ($1,$2,'created','Imported from validated CSV')`, [lead.id, req.user.id]);
+      created.push(lead.id);
+    }
+    return created;
+  });
+  res.json({ imported: inserted.length, skipped_duplicates: prepared.filter(row => row.status === 'duplicate').length + candidates.length - inserted.length, invalid: prepared.filter(row => row.status === 'invalid').length });
 }));
 
 r.get('/leads/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => {
@@ -81,7 +168,7 @@ r.get('/leads/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => {
   const prioritySignals = await one(`SELECT
       (SELECT count(*)::int FROM share_links sh WHERE sh.lead_id = $1 AND sh.last_viewed >= now() - interval '30 days') AS recent_share_views,
       (SELECT max(c.last_customer_at) FROM chats c WHERE c.lead_id = $1) AS last_customer_message_at`, [l.id]);
-  res.json({ ...maskPhoneField({ ...l, ...prioritySignals, ...prioritizeLead({ ...l, ...prioritySignals }) }, 'phone', req.user.role), events, visits, chats, shares, assigned, broker, project, unit });
+  res.json({ ...protectCustomerFields({ ...l, ...prioritySignals, ...prioritizeLead({ ...l, ...prioritySignals }) }, req.user.role), events, visits: protectCustomerRows(visits, req.user.role), chats, shares, assigned, broker, project, unit });
 }));
 
 /** Manual lead, walk-in, or a broker registering their client (lead protection: first registration wins). */
@@ -98,6 +185,7 @@ r.post('/leads', allow('admin', 'sales', 'broker'), h(async (req, res) => {
   }
   if (b.stage !== undefined) oneOf(b.stage, 'Lead stage', STAGES, { optional: false });
   if (b.temperature !== undefined) oneOf(b.temperature, 'Lead temperature', TEMPERATURES, { optional: false });
+  const whatsappConsent = b.whatsapp_consent === undefined ? null : oneOf(b.whatsapp_consent, 'WhatsApp contact preference', ['unknown', 'opted_in', 'opted_out'], { optional: false });
   if (b.source !== undefined) oneOf(b.source, 'Lead source', LEAD_SOURCES, { optional: false });
   if (b.auto_assign !== undefined && typeof b.auto_assign !== 'boolean') throw fail(400, 'Auto-assign must be true or false');
   const followupAt = b.followup_at ? dateValue(b.followup_at, 'Follow-up date', { optional: false }) : null;
@@ -111,11 +199,11 @@ r.post('/leads', allow('admin', 'sales', 'broker'), h(async (req, res) => {
   if (dupe) throw fail(409, `This customer is already registered${dupe.owner ? ' with ' + dupe.owner : ''}.`);
   const isBroker = req.user.role === 'broker';
   const lead = await one(
-    `INSERT INTO leads (org_id, project_id, name, phone, email, source, budget, config_pref, purpose, timeline, notes, broker_id, assigned_to, assigned_at, first_touch_at, stage, followup_at, followup_type, followup_note)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, CASE WHEN $13::uuid IS NULL THEN NULL ELSE now() END, CASE WHEN $13::uuid IS NULL THEN NULL ELSE now() END, $14, $15, $16, $17) RETURNING *`,
+    `INSERT INTO leads (org_id, project_id, name, phone, email, source, budget, config_pref, purpose, timeline, notes, broker_id, assigned_to, assigned_at, first_touch_at, stage, followup_at, followup_type, followup_note, whatsapp_consent, whatsapp_consent_updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, CASE WHEN $13::uuid IS NULL THEN NULL ELSE now() END, CASE WHEN $13::uuid IS NULL THEN NULL ELSE now() END, $14, $15, $16, $17, COALESCE($18, 'unknown'), CASE WHEN $18::text IS NOT NULL THEN now() END) RETURNING *`,
     [req.user.org, b.project_id || null, name, phone, email || null, isBroker ? 'broker' : (b.source || 'manual'), b.budget, b.config_pref, b.purpose, b.timeline, b.notes,
       isBroker ? req.user.id : null, req.user.role === 'admin' ? (b.assigned_to || null) : req.user.id, b.stage || 'contacted',
-      followupAt, b.followup_type || 'call', b.followup_note || null]);
+      followupAt, b.followup_type || 'call', b.followup_note || null, whatsappConsent]);
   await logLead(lead.id, req.user.id, 'created', isBroker ? `Registered by broker ${req.user.name}` : `Added by ${req.user.name}`);
   if (lead.followup_at) {
     const fDate = new Date(lead.followup_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
@@ -127,7 +215,7 @@ r.post('/leads', allow('admin', 'sales', 'broker'), h(async (req, res) => {
     const assignee = await assignLead(lead.id, { actorId: req.user.id });
     if (assignee) responseLead = await one(`SELECT * FROM leads WHERE id = $1`, [lead.id]);
   }
-  res.json(maskPhoneField(responseLead, 'phone', req.user.role));
+  res.json(protectCustomerFields(responseLead, req.user.role));
 }));
 
 r.patch('/leads/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => {
@@ -141,6 +229,7 @@ r.patch('/leads/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => {
   }
   if (b.stage !== undefined) oneOf(b.stage, 'Lead stage', STAGES, { optional: false });
   if (b.temperature !== undefined) oneOf(b.temperature, 'Lead temperature', TEMPERATURES, { optional: false });
+  if (b.stage === 'lost' && !String(b.lost_reason ?? l.lost_reason ?? '').trim()) throw fail(400, 'Choose a lost reason before marking this lead lost');
   if (b.project_id) uuid(b.project_id, 'Project ID');
   if (b.unit_id) uuid(b.unit_id, 'Unit ID');
   const projectId = b.project_id || l.project_id;
@@ -153,16 +242,19 @@ r.patch('/leads/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => {
   const followupType = b.followup_type !== undefined ? b.followup_type : l.followup_type;
   if (followupType) oneOf(followupType, 'Follow-up type', ['call', 'whatsapp', 'meeting', 'doc'], { optional: false });
   const followupNote = b.followup_note !== undefined ? b.followup_note : l.followup_note;
+  const whatsappConsent = b.whatsapp_consent === undefined ? null : oneOf(b.whatsapp_consent, 'WhatsApp contact preference', ['unknown', 'opted_in', 'opted_out'], { optional: false });
 
   const row = await one(
     `UPDATE leads SET name = COALESCE($2,name), email = COALESCE($3,email), budget = COALESCE($4,budget), config_pref = COALESCE($5,config_pref),
        purpose = COALESCE($6,purpose), timeline = COALESCE($7,timeline), notes = COALESCE($8,notes), stage = COALESCE($9,stage),
        temperature = COALESCE($10,temperature), project_id = COALESCE($11,project_id), unit_id = COALESCE($12,unit_id), lost_reason = COALESCE($13,lost_reason),
        followup_at = $14, followup_type = $15, followup_note = $16,
+       whatsapp_consent = COALESCE($18, whatsapp_consent),
+       whatsapp_consent_updated_at = CASE WHEN $18::text IS NOT NULL THEN now() ELSE whatsapp_consent_updated_at END,
        first_touch_at = COALESCE(first_touch_at, CASE WHEN assigned_to = $17 THEN now() END), updated_at = now()
      WHERE id = $1 RETURNING *`,
     [l.id, b.name, b.email, b.budget, b.config_pref, b.purpose, b.timeline, b.notes, b.stage, b.temperature, b.project_id, b.unit_id, b.lost_reason,
-     followupAt, followupType, followupNote, req.user.id]);
+     followupAt, followupType, followupNote, req.user.id, whatsappConsent]);
 
   if (b.stage && b.stage !== l.stage) await logLead(l.id, req.user.id, 'stage', `Stage: ${l.stage.replace('_', ' ')} → ${b.stage.replace('_', ' ')}${b.lost_reason ? ` (${b.lost_reason})` : ''}`);
 
@@ -175,7 +267,7 @@ r.patch('/leads/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => {
     }
   }
 
-  res.json(row);
+  res.json(protectCustomerFields(row, req.user.role));
 }));
 
 r.delete('/leads/:id', allow('admin', 'sales'), h(async (req, res) => {
@@ -205,10 +297,10 @@ r.post('/leads/:id/events', allow('admin', 'sales', 'broker'), h(async (req, res
 // ---------- site visits ----------
 r.get('/visits', allow('admin', 'sales', 'broker'), h(async (req, res) => {
   const s = scope(req.user);
-  const rows = await many(`SELECT v.*, l.name, l.phone, l.config_pref, p.name AS project_name, p.map_url, p.location, a.name AS agent FROM site_visits v JOIN leads l ON l.id = v.lead_id
-                       LEFT JOIN projects p ON p.id = v.project_id LEFT JOIN users a ON a.id = v.agent_id
-                       WHERE v.org_id = $1${s.sql} AND v.scheduled_at > now() - interval '60 days' ORDER BY v.scheduled_at DESC`, [req.user.org, ...s.vals]);
-  res.json(maskPhoneRows(rows, 'phone', req.user.role));
+  const rows = await many(`SELECT v.*, l.name, l.phone, l.config_pref, p.name AS project_name, p.map_url, p.location, a.name AS agent, sb.name AS scheduler_name FROM site_visits v JOIN leads l ON l.id = v.lead_id
+                       LEFT JOIN projects p ON p.id = v.project_id LEFT JOIN users a ON a.id = v.agent_id LEFT JOIN users sb ON sb.id = v.scheduled_by
+                       WHERE v.org_id = $1${s.sql} AND (v.status = 'to_confirm' OR v.scheduled_at > now() - interval '60 days') ORDER BY v.scheduled_at DESC NULLS LAST`, [req.user.org, ...s.vals]);
+  res.json(protectCustomerRows(rows, req.user.role));
 }));
 
 r.post('/visits', allow('admin', 'sales', 'broker'), h(async (req, res) => {
@@ -222,16 +314,20 @@ r.post('/visits', allow('admin', 'sales', 'broker'), h(async (req, res) => {
     const project = await one(`SELECT id FROM projects WHERE id = $1 AND org_id = $2`, [project_id, req.user.org]);
     if (!project || (l.project_id && l.project_id !== project_id)) throw fail(400, 'Project must match the lead and organization');
   }
-  const v = await one(
-    `INSERT INTO site_visits (org_id, lead_id, project_id, agent_id, scheduled_at, visitors_count, transport, pickup_address)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-     [req.user.org, l.id, project_id || l.project_id, l.assigned_to || req.user.id, scheduledAt, visitors, transport, pickup_address || null]);
+  const { visit: v, created } = await scheduleVisitOnce({
+    orgId: req.user.org, leadId: l.id, projectId: project_id || l.project_id,
+    agentId: l.assigned_to || req.user.id, scheduledAt, visitorsCount: visitors, transport, pickupAddress: pickup_address || null, source: 'employee', scheduledBy: req.user.id,
+  });
 
-  await q(`UPDATE leads SET stage = 'visit_scheduled', first_touch_at = COALESCE(first_touch_at, now()) WHERE id = $1 AND stage IN ('new','contacted','qualified')`, [l.id]);
+  await q(`UPDATE leads SET stage = 'visit_scheduled', first_touch_at = COALESCE(first_touch_at, now()), followup_at = NULL, followup_note = NULL WHERE id = $1 AND stage IN ('new','contacted','qualified','visit_scheduled')`, [l.id]);
   const when = new Date(scheduled_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
-  await logLead(l.id, req.user.id, 'visit', `Site visit scheduled for ${when} (${visitors_count} visitors · ${transport})`);
-  await notifyBuyerForLeadVisit(req.user.org, l.id, `Your site visit is scheduled for ${when}. Open the buyer portal for location and details.`);
-  if (l.assigned_to && l.assigned_to !== req.user.id) await notify(req.user.org, l.assigned_to, 'visit', `Site visit booked for ${l.name}`, `/leads/${l.id}`);
+  if (created) {
+    const details = await visitDetailsFor(req.user.org, v.project_id, v.scheduled_at);
+    await logLead(l.id, req.user.id, 'visit', `Site visit scheduled for ${when} (${visitors_count} visitors · ${transport})`);
+    await notifyBuyerForLeadVisit(req.user.org, l.id, `Your site visit is scheduled. ${details}`);
+    const delivered = await sendVisitWhatsAppWhenAllowed(req.user.org, l.id, `Your site visit is scheduled. ${details}`);
+    if (l.assigned_to) await notify(req.user.org, l.assigned_to, 'visit', delivered ? `Site visit booked for ${l.name || l.phone}: ${when} IST.` : `Site visit booked for ${l.name || l.phone}: ${when} IST. Share the address and map using an approved template; the 24-hour WhatsApp window is closed.`, `/leads/${l.id}`);
+  }
   res.json(v);
 }));
 
@@ -241,15 +337,19 @@ r.post('/leads/:id/visits', allow('admin', 'sales', 'broker'), h(async (req, res
   const scheduledAt = futureDateTime(scheduled_at, 'Visit date and time');
   const visitors = number(visitors_count, 'Visitor count', { min: 1, max: 100, integer: true, optional: false });
   oneOf(transport, 'Transport preference', ['Self', 'cab', 'self'], { optional: false });
-  const v = await one(
-    `INSERT INTO site_visits (org_id, lead_id, project_id, agent_id, scheduled_at, visitors_count, transport, pickup_address)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-    [req.user.org, l.id, l.project_id, l.assigned_to || req.user.id, scheduledAt, visitors, transport, pickup_address || null]);
-  await q(`UPDATE leads SET stage = 'visit_scheduled', first_touch_at = COALESCE(first_touch_at, now()) WHERE id = $1 AND stage IN ('new','contacted','qualified')`, [l.id]);
+  const { visit: v, created } = await scheduleVisitOnce({
+    orgId: req.user.org, leadId: l.id, projectId: l.project_id,
+    agentId: l.assigned_to || req.user.id, scheduledAt, visitorsCount: visitors, transport, pickupAddress: pickup_address || null, source: 'employee', scheduledBy: req.user.id,
+  });
+  await q(`UPDATE leads SET stage = 'visit_scheduled', first_touch_at = COALESCE(first_touch_at, now()), followup_at = NULL, followup_note = NULL WHERE id = $1 AND stage IN ('new','contacted','qualified','visit_scheduled')`, [l.id]);
   const when = new Date(scheduled_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
-  await logLead(l.id, req.user.id, 'visit', `Site visit scheduled for ${when} (${visitors_count} visitors · ${transport})`);
-  await notifyBuyerForLeadVisit(req.user.org, l.id, `Your site visit is scheduled for ${when}. Open the buyer portal for location and details.`);
-  if (l.assigned_to && l.assigned_to !== req.user.id) await notify(req.user.org, l.assigned_to, 'visit', `Site visit booked for ${l.name}`, `/leads/${l.id}`);
+  if (created) {
+    const details = await visitDetailsFor(req.user.org, v.project_id, v.scheduled_at);
+    await logLead(l.id, req.user.id, 'visit', `Site visit scheduled for ${when} (${visitors_count} visitors · ${transport})`);
+    await notifyBuyerForLeadVisit(req.user.org, l.id, `Your site visit is scheduled. ${details}`);
+    const delivered = await sendVisitWhatsAppWhenAllowed(req.user.org, l.id, `Your site visit is scheduled. ${details}`);
+    if (l.assigned_to) await notify(req.user.org, l.assigned_to, 'visit', delivered ? `Site visit booked for ${l.name || l.phone}: ${when} IST.` : `Site visit booked for ${l.name || l.phone}: ${when} IST. Share the address and map using an approved template; the 24-hour WhatsApp window is closed.`, `/leads/${l.id}`);
+  }
   res.json(v);
 }));
 
@@ -359,9 +459,10 @@ r.patch('/visits/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => 
   if (status === 'rescheduled' && !reschedule_at) throw fail(400, 'A new date and time are required to reschedule');
   const cur = await one(`SELECT * FROM site_visits WHERE id = $1 AND org_id = $2`, [req.params.id, req.user.org]);
   if (!cur) throw fail(404, 'Visit not found');
-  await leadFor(req.user, cur.lead_id);
+  const visitLead = await leadFor(req.user, cur.lead_id);
 
   const transitions = {
+    to_confirm: ['rescheduled', 'cancelled'],
     scheduled: ['confirmed', 'done', 'no_show', 'cancelled', 'rescheduled'],
     confirmed: ['done', 'no_show', 'cancelled', 'rescheduled'],
     done: [], no_show: [], cancelled: [], rescheduled: [],
@@ -381,6 +482,11 @@ r.patch('/visits/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => 
        rating = COALESCE($5,rating), interested_unit = COALESCE($6,interested_unit),
        scheduled_at = $7 WHERE id = $1 AND org_id = $2 RETURNING *`,
     [cur.id, req.user.org, nextStatus, feedback, ratingValue, interested_unit, newTime]);
+
+  if (status === 'rescheduled') {
+    await q(`UPDATE leads SET stage = CASE WHEN stage IN ('booked','lost') THEN stage ELSE 'visit_scheduled' END,
+      followup_at = NULL, followup_note = NULL, updated_at = now() WHERE id = $1`, [v.lead_id]);
+  }
 
   if (status === 'done') {
     await q(`UPDATE leads SET stage = 'visit_done' WHERE id = $1 AND stage IN ('visit_scheduled','qualified','contacted')`, [v.lead_id]);
@@ -402,7 +508,13 @@ r.patch('/visits/:id', allow('admin', 'sales', 'broker'), h(async (req, res) => 
           : status === 'done' ? `Your site visit on ${when} is marked complete. Thank you for visiting.`
             : status === 'no_show' ? `We couldn’t complete your site visit scheduled for ${when}. Contact your advisor to arrange another time.`
               : null;
-    if (buyerMessage) await notifyBuyerForLeadVisit(req.user.org, v.lead_id, buyerMessage);
+    const visitDetails = await visitDetailsFor(req.user.org, v.project_id, v.scheduled_at);
+    const completeBuyerMessage = ['rescheduled', 'confirmed'].includes(status) ? `Your site visit is ${status === 'rescheduled' ? 'updated' : 'confirmed'}. ${visitDetails}` : buyerMessage;
+    if (completeBuyerMessage) await notifyBuyerForLeadVisit(req.user.org, v.lead_id, completeBuyerMessage);
+    if (['rescheduled', 'confirmed'].includes(status)) await sendVisitWhatsAppWhenAllowed(req.user.org, v.lead_id, completeBuyerMessage);
+    if (['rescheduled', 'confirmed'].includes(status) && cur.agent_id) {
+      await notify(req.user.org, cur.agent_id, 'visit', `Site visit for ${visitLead.name || 'your client'} ${status === 'rescheduled' ? 'changed' : 'confirmed'}: ${when} IST.`, '/visits');
+    }
   }
 
   res.json(v);
@@ -441,7 +553,8 @@ r.get('/chats', allow('admin', 'sales'), h(async (req, res) => {
     `SELECT c.*, l.name, l.phone, l.stage, l.temperature, w.display, a.name AS agent,
        (SELECT body FROM chat_messages m WHERE m.chat_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_body,
        (SELECT sender FROM chat_messages m WHERE m.chat_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_sender,
-       (SELECT created_at FROM chat_messages m WHERE m.chat_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_at
+       (SELECT created_at FROM chat_messages m WHERE m.chat_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_at,
+       (SELECT delivery_status FROM chat_messages m WHERE m.chat_id = c.id AND m.sender IN ('agent','ai') AND m.ext_id IS NOT NULL ORDER BY created_at DESC LIMIT 1) AS last_delivery_status
      FROM chats c JOIN leads l ON l.id = c.lead_id LEFT JOIN wa_numbers w ON w.id = c.wa_number_id LEFT JOIN users a ON a.id = c.agent_id
      WHERE c.org_id = $1 ${req.user.role === 'admin' ? '' : 'AND c.agent_id = $2'} ORDER BY last_at DESC NULLS LAST LIMIT 200`,
     req.user.role === 'admin' ? [req.user.org] : [req.user.org, req.user.id]));
@@ -469,6 +582,7 @@ r.post('/chats', allow('admin', 'sales'), h(async (req, res) => {
   let num = await one(`SELECT * FROM wa_numbers WHERE org_id = $1 AND user_id = $2`, [req.user.org, req.user.id]);
   if (!num) num = await one(`SELECT * FROM wa_numbers WHERE org_id = $1 ORDER BY user_id NULLS LAST LIMIT 1`, [req.user.org]);
   if (!num) throw fail(409, 'No WhatsApp number connected yet. Connect one in Settings → Integrations.');
+  if (lead.whatsapp_consent === 'opted_out' && initial_message) throw fail(409, 'This customer opted out of WhatsApp messages. Update their preference only after they explicitly opt in again.');
 
   let chat = await one(`SELECT * FROM chats WHERE org_id = $1 AND lead_id = $2 AND wa_number_id = $3`, [req.user.org, lead.id, num.id]);
   if (!chat) {
@@ -487,25 +601,38 @@ r.post('/chats', allow('admin', 'sales'), h(async (req, res) => {
       if (withinWindow) {
         sent = await meta.sendText(num, meta.normPhone(lead.phone), text);
       } else {
+        if (lead.whatsapp_consent !== 'opted_in') throw fail(409, 'Record the customer’s WhatsApp opt-in before sending a template outside the 24-hour conversation window.');
         if (!config.meta.introTemplate) throw fail(409, 'An approved WhatsApp intro template is required to message a customer who has not messaged in the last 24 hours. Configure it in the server environment.');
-        sent = await meta.sendTemplate(num, meta.normPhone(lead.phone), [lead.name || 'ji', req.user.name, 'our project']);
+        const templates = await meta.listTemplates(num);
+        const approved = templates.find(item => item.name === config.meta.introTemplate && item.language === config.meta.templateLang && String(item.status).toUpperCase() === 'APPROVED');
+        if (!approved) throw fail(409, 'The configured intro template is not approved for the configured language in Meta.');
+        const templateBody = (approved.components || []).find(component => String(component.type).toUpperCase() === 'BODY')?.text || approved.name;
+        const matches = [...templateBody.matchAll(/\{\{\s*(\d+)\s*\}\}/g)];
+        if (/\{\{/.test(templateBody) && !matches.length) throw fail(409, 'The configured template uses named parameters, which this intro flow does not support yet.');
+        const values = [lead.name || 'there', req.user.name, 'our project'];
+        const indexes = matches.map(match => Number(match[1]));
+        if (indexes.some(index => index < 1 || index > values.length)) throw fail(409, 'The configured intro template requires more values than this flow can provide.');
+        sent = await meta.sendApprovedTemplate(num, meta.normPhone(lead.phone), approved.name, approved.language, indexes.map(index => values[index - 1]));
         templateSent = true;
       }
     } catch (e) {
       if (e.status) throw e;
       console.error('[wa send] initial message failed:', e.message);
+      await one(`INSERT INTO chat_messages (chat_id,sender,body,delivery_status,delivery_error,status_updated_at) VALUES ($1,'agent',$2,'failed',$3,now())`,
+        [chat.id, text, String(e.message).slice(0, 1000)]);
+      await notifyAdminsOnce(req.user.org, 'integration_error', `WhatsApp send failed for ${lead.name || lead.phone}: ${String(e.message).slice(0, 350)}`, '/settings');
       throw fail(502, `WhatsApp did not send the message: ${e.message}`);
     }
     const body = withinWindow ? text : `Approved WhatsApp template sent: ${config.meta.introTemplate}`;
-    await one(`INSERT INTO chat_messages (chat_id, sender, body, ext_id) VALUES ($1,$2,$3,$4) RETURNING *`,
-      [chat.id, withinWindow ? 'agent' : 'system', body, sent?.messages?.[0]?.id || null]);
+    await one(`INSERT INTO chat_messages (chat_id, sender, body, ext_id, delivery_status, status_updated_at) VALUES ($1,'agent',$2,$3,'accepted',now()) RETURNING *`,
+      [chat.id, body, sent?.messages?.[0]?.id || null]);
     await q(`UPDATE chats SET last_agent_at = now() WHERE id = $1`, [chat.id]);
   }
 
   res.json({ ...chat, name: lead.name, phone: lead.phone, templateSent });
 }));
 async function chatFor(user, id) {
-  const c = await one(`SELECT c.*, w.phone_number_id, w.access_token, w.display, l.phone, l.name, l.id AS lead_id FROM chats c JOIN wa_numbers w ON w.id = c.wa_number_id JOIN leads l ON l.id = c.lead_id
+  const c = await one(`SELECT c.*, w.phone_number_id, w.waba_id, w.access_token, w.display, l.phone, l.name, l.whatsapp_consent, l.id AS lead_id FROM chats c JOIN wa_numbers w ON w.id = c.wa_number_id JOIN leads l ON l.id = c.lead_id
                        WHERE c.id = $1 AND c.org_id = $2 ${user.role === 'admin' ? '' : 'AND c.agent_id = $3'}`, user.role === 'admin' ? [id, user.org] : [id, user.org, user.id]);
   if (!c) throw fail(404, 'Chat not found');
   return c;
@@ -515,17 +642,101 @@ r.get('/chats/:id', allow('admin', 'sales'), h(async (req, res) => {
   const { access_token, ...safe } = c;
   res.json({ ...safe, messages: await many(`SELECT * FROM chat_messages WHERE chat_id = $1 ORDER BY created_at`, [c.id]) });
 }));
+r.get('/whatsapp/templates', allow('admin', 'sales'), h(async (req, res) => {
+  const numberId = req.query.wa_number_id;
+  let num;
+  if (numberId) {
+    uuid(numberId, 'WhatsApp number ID');
+    num = await one(`SELECT * FROM wa_numbers WHERE id = $1 AND org_id = $2 AND ($3 = 'admin' OR user_id = $4 OR user_id IS NULL)`, [numberId, req.user.org, req.user.role, req.user.id]);
+  } else {
+    num = await one(`SELECT * FROM wa_numbers WHERE org_id = $1 AND (user_id = $2 OR user_id IS NULL) ORDER BY user_id NULLS LAST LIMIT 1`, [req.user.org, req.user.id]);
+  }
+  if (!num) throw fail(404, 'No WhatsApp number is available to this user');
+  try { res.json(await meta.listTemplates(num)); }
+  catch (error) {
+    await notifyAdminsOnce(req.user.org, 'integration_error', `WhatsApp template sync failed: ${String(error.message).slice(0, 400)}`, '/settings');
+    throw fail(502, `Could not load WhatsApp templates: ${error.message}`);
+  }
+}));
 r.post('/chats/:id/messages', allow('admin', 'sales'), h(async (req, res) => {
   const c = await chatFor(req.user, req.params.id);
-  const text = String(req.body?.text || '').trim();
+  let text = String(req.body?.text || '').trim();
   if (!text) throw fail(400, 'Message is empty');
+  const confirmedVisitAt = parseEmployeeVisitConfirmation(text);
+  let visitDetails = '';
+  if (confirmedVisitAt) {
+    const project = await one(`SELECT name, location, map_url FROM projects WHERE id = $1 AND org_id = $2`, [(await leadFor(req.user, c.lead_id)).project_id, req.user.org]);
+    visitDetails = visitMessageDetails({ when: confirmedVisitAt, projectName: project?.name, address: project?.location, mapUrl: project?.map_url });
+    text = `${text}\n${visitDetails}`;
+  }
+  if (c.whatsapp_consent === 'opted_out') throw fail(409, 'This customer opted out of WhatsApp messages. Do not send another message unless they opt in again.');
   if (!c.last_customer_at || Date.now() - new Date(c.last_customer_at) > 24 * 3600e3) throw fail(409, 'WhatsApp allows free messages only within 24 hours of the customer’s last message. Call them, or wait for them to reply.');
-  try { await meta.sendText(c, meta.normPhone(c.phone), text); }
-  catch (e) { throw fail(502, `WhatsApp could not send this message (${e.message}). Add this number's real Phone number ID and access token in Settings → LeadSathi & WhatsApp.`); }
-  const m = await one(`INSERT INTO chat_messages (chat_id, sender, body) VALUES ($1,'agent',$2) RETURNING *`, [c.id, text]);
+  let sent;
+  try { sent = await meta.sendText(c, meta.normPhone(c.phone), text); }
+  catch (e) {
+    await one(`INSERT INTO chat_messages (chat_id,sender,body,delivery_status,delivery_error,status_updated_at) VALUES ($1,'agent',$2,'failed',$3,now())`, [c.id, text, String(e.message).slice(0, 1000)]);
+    await notifyAdminsOnce(req.user.org, 'integration_error', `WhatsApp send failed for ${c.name || c.phone}: ${String(e.message).slice(0, 350)}`, '/settings');
+    throw fail(502, `WhatsApp could not send this message (${e.message}). Add this number's real Phone number ID and access token in Settings → LeadSathi & WhatsApp.`);
+  }
+  const m = await one(`INSERT INTO chat_messages (chat_id, sender, body, ext_id, delivery_status, status_updated_at) VALUES ($1,'agent',$2,$3,'accepted',now()) RETURNING *`, [c.id, text, sent?.messages?.[0]?.id || null]);
   await q(`UPDATE chats SET last_agent_at = now(), pending_ai_at = NULL WHERE id = $1`, [c.id]);
   await q(`UPDATE leads SET first_touch_at = COALESCE(first_touch_at, now()), stage = CASE WHEN stage = 'new' THEN 'contacted' ELSE stage END WHERE id = $1`, [c.lead_id]);
+  if (confirmedVisitAt) {
+    const lead = await leadFor(req.user, c.lead_id);
+    const { visit, created } = await scheduleVisitOnce({ orgId: req.user.org, leadId: lead.id, projectId: lead.project_id, agentId: lead.assigned_to || req.user.id,
+      scheduledAt: confirmedVisitAt, source: 'employee', scheduledBy: req.user.id, chatId: c.id, confirmationNote: text.slice(0, 1000) });
+    await q(`UPDATE leads SET stage = CASE WHEN stage IN ('booked','lost') THEN stage ELSE 'visit_scheduled' END, followup_at = NULL, followup_note = NULL, updated_at = now() WHERE id = $1`, [lead.id]);
+    const when = new Date(visit.scheduled_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
+    await logLead(lead.id, req.user.id, 'visit', `${created ? 'Employee scheduled' : 'Employee confirmed/updated'} site visit for ${when} IST`);
+    await q(`INSERT INTO chat_messages (chat_id, sender, body) VALUES ($1,'system',$2)`, [c.id, `Visit record ${created ? 'created' : 'updated'} from employee conversation: ${visitDetails}`]);
+    if (lead.assigned_to) await notify(req.user.org, lead.assigned_to, 'visit', `Site visit ${created ? 'scheduled' : 'updated'} for ${lead.name || lead.phone}: ${when} IST`, '/visits');
+  }
   res.json(m);
+}));
+r.post('/chats/:id/templates', allow('admin', 'sales'), h(async (req, res) => {
+  const c = await chatFor(req.user, req.params.id);
+  if (c.whatsapp_consent !== 'opted_in') throw fail(409, 'Record the customer’s WhatsApp opt-in before sending a template.');
+  const b = req.body || {};
+  if (Object.keys(b).some(key => !['name', 'language', 'parameters'].includes(key))) throw fail(400, 'Unsupported template send field');
+  const name = text(b.name, 'Template name', { optional: false, max: 512 });
+  const language = text(b.language, 'Template language', { optional: false, max: 32 });
+  const params = b.parameters === undefined ? [] : b.parameters;
+  if (!Array.isArray(params) || params.length > 20) throw fail(400, 'Template parameters must be a list of at most 20 values');
+  for (const [index, value] of params.entries()) text(value, `Template value ${index + 1}`, { optional: false, max: 1024 });
+  let templates;
+  try { templates = await meta.listTemplates(c); }
+  catch (error) { throw fail(502, `Could not verify the selected template with Meta: ${error.message}`); }
+  const template = templates.find(item => item.name === name && item.language === language && String(item.status).toUpperCase() === 'APPROVED');
+  if (!template) throw fail(409, 'This template is not approved for the selected language. Refresh the template list and choose an approved version.');
+  const components = template.components || [];
+  const bodyComponent = components.find(component => String(component.type).toUpperCase() === 'BODY');
+  const bodyText = bodyComponent?.text || '';
+  const allPlaceholders = bodyText.match(/\{\{\s*[^}]+\s*\}\}/g) || [];
+  if (allPlaceholders.some(value => !/^\{\{\s*\d+\s*\}\}$/.test(value))) throw fail(400, 'This template uses named body parameters, which this chat flow does not support yet.');
+  const expected = allPlaceholders.length;
+  const unsupportedDynamicParts = components.some(component => {
+    const type = String(component.type).toUpperCase();
+    if (type === 'HEADER') return component.format !== 'TEXT' || /\{\{/.test(component.text || '');
+    if (type === 'BUTTONS') return (component.buttons || []).some(button => /\{\{/.test(button.url || ''));
+    return false;
+  });
+  if (unsupportedDynamicParts) throw fail(400, 'This template has dynamic header or button fields. Use a text-body template for sending from this chat.');
+  if (params.length !== expected) throw fail(400, `This template requires ${expected} body value${expected === 1 ? '' : 's'}.`);
+  let sent;
+  try { sent = await meta.sendApprovedTemplate(c, meta.normPhone(c.phone), name, language, params); }
+  catch (error) {
+    await one(`INSERT INTO chat_messages (chat_id,sender,body,delivery_status,delivery_error,status_updated_at) VALUES ($1,'agent',$2,'failed',$3,now())`,
+      [c.id, `[Template: ${name} · ${language}]`, String(error.message).slice(0, 1000)]);
+    await notifyAdminsOnce(req.user.org, 'integration_error', `WhatsApp template send failed for ${c.name || c.phone}: ${String(error.message).slice(0, 350)}`, '/settings');
+    throw fail(502, `WhatsApp could not send this template: ${error.message}`);
+  }
+  let preview = bodyText || name;
+  params.forEach((value, index) => { preview = preview.replace(new RegExp(`\\{\\{\\s*${index + 1}\\s*\\}\\}`), value); });
+  const message = await one(`INSERT INTO chat_messages (chat_id,sender,body,ext_id,delivery_status,status_updated_at)
+    VALUES ($1,'agent',$2,$3,'accepted',now()) RETURNING *`, [c.id, `[Template: ${name} · ${language}] ${preview}`, sent?.messages?.[0]?.id || null]);
+  await q(`UPDATE chats SET last_agent_at = now(), pending_ai_at = NULL WHERE id = $1`, [c.id]);
+  await q(`UPDATE leads SET first_touch_at = COALESCE(first_touch_at,now()), stage = CASE WHEN stage = 'new' THEN 'contacted' ELSE stage END WHERE id = $1`, [c.lead_id]);
+  res.json(message);
 }));
 r.patch('/chats/:id', allow('admin', 'sales'), h(async (req, res) => {
   const c = await chatFor(req.user, req.params.id);
@@ -620,7 +831,7 @@ r.get('/bookings', h(async (req, res) => {
      FROM bookings b JOIN units u ON u.id = b.unit_id JOIN projects p ON p.id = u.project_id
      LEFT JOIN users c ON c.id = b.customer_id LEFT JOIN users s ON s.id = b.sold_by LEFT JOIN users br ON br.id = b.broker_id
      WHERE b.org_id = $1 ${where} ORDER BY b.created_at DESC`, role === 'admin' ? [org] : [org, id]);
-  res.json(maskPhoneRows(rows, 'customer_phone', role));
+  res.json(protectCustomerRows(rows, role, 'customer_phone', 'customer_email'));
 }));
 
 r.get('/bookings/:id', h(async (req, res) => {
@@ -637,7 +848,7 @@ r.get('/bookings/:id', h(async (req, res) => {
     FROM booking_documents WHERE org_id = $1 AND booking_id = $2 ORDER BY created_at DESC`, [req.user.org, b.id]))
     .map(document => ({ ...document, url: signPrivateUrl('booking-documents', document.id, req.user.org, 3600) }));
   b.commissions = req.user.role === 'customer' ? [] : await many(`SELECT c.*, u.name FROM commissions c JOIN users u ON u.id = c.user_id WHERE c.booking_id = $1 ${req.user.role === 'admin' ? '' : 'AND c.user_id = $2'}`, req.user.role === 'admin' ? [b.id] : [b.id, req.user.id]);
-  res.json(maskPhoneField(b, 'customer_phone', req.user.role));
+  res.json(protectCustomerFields(b, req.user.role, 'customer_phone', 'customer_email'));
 }));
 
 /** Book a unit. Creates the customer login, payment schedule, broker commission and sales incentive in one go. */
@@ -654,12 +865,19 @@ r.post('/bookings', allow('admin', 'sales'), h(async (req, res) => {
   const bookingDate = b.booking_date ? dateValue(b.booking_date, 'Booking date', { optional: false }) : null;
   if (b.payment_mode !== undefined) oneOf(b.payment_mode, 'Payment mode', ['NEFT', 'RTGS', 'Cheque', 'UPI', 'Home loan disbursal'], { optional: false });
   if (b.payment_ref !== undefined && (typeof b.payment_ref !== 'string' || b.payment_ref.length > 120)) throw fail(400, 'Payment reference must be at most 120 characters');
-  const lead = b.lead_id ? await leadFor(req.user, b.lead_id) : null;
+  let lead = b.lead_id ? await leadFor(req.user, b.lead_id) : null;
   if (b.lead_id && !lead) throw fail(404, 'Lead not found');
   if (lead?.project_id && lead.project_id !== unit.project_id) throw fail(400, 'Lead and unit must belong to the same project');
   const custName = b.customer_name || lead?.name;
   const rawCustEmail = b.customer_email || lead?.email;
   const custPhone = meta.normPhone(b.customer_phone || lead?.phone);
+  // Preserve first-touch source attribution when staff books a customer without selecting the lead.
+  if (!lead && custPhone) {
+    const candidates = await many(`SELECT id FROM leads WHERE org_id = $1 AND phone = $2 AND stage <> 'lost'
+      AND (project_id = $3 OR project_id IS NULL) AND ($4 = 'admin' OR assigned_to = $5)
+      ORDER BY created_at DESC LIMIT 2`, [req.user.org, custPhone, unit.project_id, req.user.role, req.user.id]);
+    if (candidates.length === 1) lead = await leadFor(req.user, candidates[0].id);
+  }
   if (!custName || !rawCustEmail) throw fail(400, 'Customer name and email are needed (the email becomes their portal login)');
   const custEmail = validEmail(rawCustEmail, 'Customer email', { optional: false });
   const leadAssignee = lead?.assigned_to ? await one(`SELECT id, role, active FROM users WHERE id = $1 AND org_id = $2`, [lead.assigned_to, req.user.org]) : null;

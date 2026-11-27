@@ -145,7 +145,7 @@ function Emi({ price, defaults }) {
 }
 
 function Enquire({ token, unit, agent, say }) {
-  const [f, setF] = useState({ name: '', phone: '', visit: '', message: '' });
+  const [f, setF] = useState({ name: '', phone: '', visit: '', message: '', whatsapp_opt_in: false });
   const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);
   const submit = async e => {
@@ -162,6 +162,7 @@ function Enquire({ token, unit, agent, say }) {
         <input className="input" aria-label="Your name" placeholder="Your name" required value={f.name} onChange={e => setF({ ...f, name: e.target.value })} />
         <input className="input" aria-label="Mobile number" placeholder="Mobile number" inputMode="tel" required value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} />
         <label className="field" style={{ gap: 4 }}><span className="hint">Preferred visit date (optional)</span><input type="date" className="input" value={f.visit} onChange={e => setF({ ...f, visit: e.target.value })} /></label>
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 9, fontSize: 13, color: 'var(--ink-2)' }}><input type="checkbox" checked={f.whatsapp_opt_in} onChange={e => setF({ ...f, whatsapp_opt_in: e.target.checked })} /><span>I agree to receive property updates and visit information on WhatsApp. I can opt out any time.</span></label>
         <button className="btn sun" disabled={busy}>{busy ? 'Sending…' : 'Request a call back'}</button>
       </form>
       {agent?.phone && <p className="muted" style={{ fontSize: 13 }}>Or call {agent.name} directly: <span className="mono">{phone(agent.phone)}</span></p>}

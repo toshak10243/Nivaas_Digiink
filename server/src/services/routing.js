@@ -1,7 +1,7 @@
 // Lead routing: who should handle this lead, and hand the conversation to their WhatsApp number.
 import { one, many, q } from '../db.js';
 import { settingsOf } from '../settings.js';
-import { notify, logLead } from './notify.js';
+import { notify, notifyAdminsOnce, logLead } from './notify.js';
 import * as meta from './meta.js';
 import { config } from '../config.js';
 import { eligibleAssignees } from '../lib/lead-routing.js';
@@ -50,14 +50,33 @@ async function handoffChat(lead, who) {
     `INSERT INTO chats (org_id, lead_id, wa_number_id, agent_id) VALUES ($1,$2,$3,$4)
      ON CONFLICT (lead_id, wa_number_id) DO UPDATE SET agent_id = EXCLUDED.agent_id RETURNING *`,
     [lead.org_id, lead.id, num.id, who.id]);
-  const project = lead.project_id ? await one(`SELECT name FROM projects WHERE id = $1`, [lead.project_id]) : null;
-  const intro = `Namaste ${lead.name || ''}! I'm ${who.name} from ${project?.name || 'our team'}. I'll help you with your home search from here.`;
+  if (lead.whatsapp_consent !== 'opted_in') {
+    await q(`INSERT INTO chat_messages (chat_id, sender, body) VALUES ($1,'system',$2)`, [chat.id, 'Agent assigned. Intro message not sent because WhatsApp opt-in is not recorded.']);
+    return;
+  }
   try {
-    if (!config.meta.introTemplate) throw new Error('No approved WA_INTRO_TEMPLATE is configured; intro not sent.');
-    await meta.sendTemplate(num, meta.normPhone(lead.phone), [lead.name || 'ji', who.name, project?.name || 'our project']);
-    await q(`INSERT INTO chat_messages (chat_id, sender, body) VALUES ($1,'system',$2)`, [chat.id, `Intro sent from ${who.name}'s WhatsApp: "${intro}"`]);
+    if (!config.meta.introTemplate) throw new Error('No WA_INTRO_TEMPLATE is configured.');
+    const templates = await meta.listTemplates(num);
+    const template = templates.find(item => item.name === config.meta.introTemplate && item.language === config.meta.templateLang && String(item.status).toUpperCase() === 'APPROVED');
+    if (!template) throw new Error('Configured intro template is not approved for its configured language.');
+    const body = (template.components || []).find(component => String(component.type).toUpperCase() === 'BODY')?.text || template.name;
+    const indexes = [...body.matchAll(/\{\{\s*(\d+)\s*\}\}/g)].map(match => Number(match[1]));
+    if (/\{\{/.test(body) && !indexes.length) throw new Error('Configured intro template uses unsupported named parameters.');
+    if ((template.components || []).some(component => {
+      const type = String(component.type).toUpperCase();
+      return type === 'HEADER' && (component.format !== 'TEXT' || /\{\{/.test(component.text || '')) ||
+        type === 'BUTTONS' && (component.buttons || []).some(button => /\{\{/.test(button.url || ''));
+    })) throw new Error('Configured intro template has dynamic header or button fields not supported by automatic handoff.');
+    const values = [lead.name || 'there', who.name, lead.project_id ? (await one(`SELECT name FROM projects WHERE id = $1`, [lead.project_id]))?.name || 'our project' : 'our project'];
+    if (indexes.some(index => index < 1 || index > values.length)) throw new Error('Configured intro template requires more values than Nivaas can provide.');
+    const sent = await meta.sendApprovedTemplate(num, meta.normPhone(lead.phone), template.name, template.language, indexes.map(index => values[index - 1]));
+    let preview = body;
+    indexes.forEach(index => { preview = preview.replace(new RegExp(`\\{\\{\\s*${index}\\s*\\}\\}`), values[index - 1]); });
+    await q(`INSERT INTO chat_messages (chat_id, sender, body, ext_id, delivery_status, status_updated_at) VALUES ($1,'agent',$2,$3,'accepted',now())`,
+      [chat.id, `[Template: ${template.name}] ${preview}`, sent?.messages?.[0]?.id || null]);
   } catch (e) {
     await q(`INSERT INTO chat_messages (chat_id, sender, body) VALUES ($1,'system',$2)`, [chat.id, `Could not send the intro message: ${e.message}`]);
+    await notifyAdminsOnce(lead.org_id, 'integration_error', `WhatsApp agent-introduction failed for ${lead.name || lead.phone}: ${String(e.message).slice(0, 350)}`, '/settings');
   }
 }
 

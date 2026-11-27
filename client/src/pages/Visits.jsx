@@ -22,6 +22,7 @@ export default function Visits({ me, go, say }) {
   if (!visits) return <div className="page"><Loading /></div>;
 
   const filteredVisits = visits.filter(v => {
+    if (filter === 'to_confirm') return v.status === 'to_confirm';
     if (filter === 'upcoming') return ['scheduled', 'confirmed'].includes(v.status) && new Date(v.scheduled_at) > Date.now() - 4 * 3600e3;
     if (filter === 'unassigned') return !v.agent && ['scheduled', 'confirmed'].includes(v.status);
     if (filter === 'confirmed') return v.status === 'confirmed';
@@ -81,7 +82,7 @@ export default function Visits({ me, go, say }) {
   // Group by day for upcoming view
   const groups = {};
   for (const v of filteredVisits) {
-    (groups[dayKey(v.scheduled_at)] ||= []).push(v);
+    (groups[v.status === 'to_confirm' ? 'to-confirm' : dayKey(v.scheduled_at)] ||= []).push(v);
   }
 
   return (
@@ -103,6 +104,7 @@ export default function Visits({ me, go, say }) {
           label="Status"
           options={[
             ['upcoming', 'Upcoming'],
+            ['to_confirm', 'To confirm'],
             ['unassigned', 'Unassigned'],
             ['confirmed', 'Confirmed'],
             ['done', 'Visited / Done'],
@@ -123,15 +125,17 @@ export default function Visits({ me, go, say }) {
         Object.entries(groups).map(([k, list]) => (
           <section key={k} className="card" style={{ marginBottom: 18 }}>
             <div className="card-h">
-              <h3>{label(list[0].scheduled_at)}</h3>
+              <h3>{k === 'to-confirm' ? 'To confirm' : label(list[0].scheduled_at)}</h3>
               <span className="muted">{list.length} visit{list.length > 1 ? 's' : ''}</span>
             </div>
             <div className="list">
               {list.map(v => (
                 <div key={v.id} className="lrow vrow" style={{ alignItems: 'flex-start', padding: '14px 16px', gap: 14 }}>
                   <div style={{ minWidth: 80 }}>
-                    <span className="when big" style={{ display: 'block', fontSize: 17, fontWeight: 700 }}>{time(v.scheduled_at)}</span>
-                    <span className="muted" style={{ fontSize: 11 }}>{new Date(v.scheduled_at).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })}</span>
+                    {v.scheduled_at ? <>
+                      <span className="when big" style={{ display: 'block', fontSize: 17, fontWeight: 700 }}>{time(v.scheduled_at)}</span>
+                      <span className="muted" style={{ fontSize: 11 }}>{new Date(v.scheduled_at).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })}</span>
+                    </> : <span className="muted" style={{ fontSize: 13 }}>Date &amp; time pending</span>}
                   </div>
 
                   <div style={{ flex: 1, minWidth: 200 }}>
@@ -157,6 +161,10 @@ export default function Visits({ me, go, say }) {
                       <span>{v.config_pref || 'Requirement open'}</span> Â· <b>{v.project_name}</b> Â· Advisor: <b>{v.agent || 'Unassigned'}</b>
                     </div>
 
+                    <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
+                      Source: <b>{v.source || 'employee'}</b>{v.scheduler_name ? ` · Scheduled by ${v.scheduler_name}` : ''}{v.chat_id ? ' · Linked to conversation' : ''}
+                    </div>
+
                     <div className="mono muted" style={{ fontSize: 12 }}>
                       {phone(v.phone)}
                     </div>
@@ -177,7 +185,7 @@ export default function Visits({ me, go, say }) {
                   </div>
 
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', alignSelf: 'center' }}>
-                    {me?.user?.role !== 'broker' && <button className="btn sm wa-btn" title="Send WhatsApp Pass" onClick={() => sendWhatsAppPass(v)}>
+                    {v.scheduled_at && me?.user?.role !== 'broker' && <button className="btn sm wa-btn" title="Send WhatsApp Pass" onClick={() => sendWhatsAppPass(v)}>
                       <Icon name="wa" />WhatsApp Pass
                     </button>}
 
@@ -186,6 +194,8 @@ export default function Visits({ me, go, say }) {
                         <Icon name="checkCircle" />Confirm
                       </button>
                     )}
+
+                    {v.status === 'to_confirm' && <button className="btn sm sun" onClick={() => setRescheduleModal(v)}>Set date &amp; time</button>}
 
                     {v.status === 'done' ? (
                       <button className="btn sm" style={{ border: '1px solid #059669', color: '#059669', background: 'rgba(5,150,105,0.08)' }} onClick={() => setPassportModal(v)}>

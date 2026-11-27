@@ -220,9 +220,12 @@ on('GET', '/api/dashboard', () => {
     const count = (arr, k) => Object.entries(arr.reduce((a, x) => ({ ...a, [x[k]]: (a[x[k]] || 0) + 1 }), {})).map(([key, n]) => ({ [k]: key, n }));
     const trend = Array.from({ length: 6 }, (_, i) => { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - (5 - i)); const m = d.toISOString().slice(0, 7); const bs = live.filter(b => b.booking_date.startsWith(m)); return { month: m, value: bs.reduce((s, b) => s + b.deal_value, 0), units: bs.length }; });
     const mb = live.filter(b => b.booking_date.startsWith(month));
+    const visitRows = visits.filter(v => ['scheduled', 'confirmed'].includes(v.status) && new Date(v.scheduled_at) > Date.now() - 4 * 3600e3);
     return { role: 'admin', inventory: count(units, 'status'), sales: { units: mb.length, value: mb.reduce((s, b) => s + b.deal_value, 0) },
       collected: payments.filter(p => p.paid_on.startsWith(month)).reduce((s, p) => s + p.amount, 0), pipeline: count(leads, 'stage'),
-      visits: visits.filter(v => ['scheduled', 'confirmed'].includes(v.status)).sort((a, b) => a.scheduled_at.localeCompare(b.scheduled_at)).slice(0, 8).map(v => { const l = leads.find(x => x.id === v.lead_id); return { ...v, name: l?.name, phone: l?.phone, agent: U(v.agent_id)?.name }; }),
+      visits: visitRows.sort((a, b) => a.scheduled_at.localeCompare(b.scheduled_at)).slice(0, 8).map(v => { const l = leads.find(x => x.id === v.lead_id); return { ...v, name: l?.name, phone: l?.phone, agent: U(v.agent_id)?.name }; }),
+      visits_count: visitRows.length,
+      visits_next_7_days_count: visitRows.filter(v => new Date(v.scheduled_at) >= Date.now() && new Date(v.scheduled_at) <= Date.now() + 7 * 864e5).length,
       followups: leads.filter(l => l.followup_at && !['booked', 'lost'].includes(l.stage)).sort((a, b) => (a.followup_at || '').localeCompare(b.followup_at || '')).slice(0, 8).map(l => ({ ...l, agent: U(l.assigned_to)?.name })),
       tickets: { open: tickets.filter(t => ['open', 'in_progress'].includes(t.status)).length, late: tickets.filter(t => ['open', 'in_progress'].includes(t.status) && new Date(t.sla_due_at) < new Date()).length },
       leaderboard: users.filter(u => ['sales', 'broker'].includes(u.role)).map(u => { const bs = mb.filter(b => b.sold_by === u.id || b.broker_id === u.id); return { id: u.id, name: u.name, role: u.role, units: bs.length, value: bs.reduce((s, b) => s + b.deal_value, 0) }; }).sort((a, b) => b.units - a.units || b.value - a.value),
@@ -230,11 +233,13 @@ on('GET', '/api/dashboard', () => {
   }
   if (['sales', 'broker'].includes(me.role)) {
     const mine = scopeLeads();
+    const myLeadIds = new Set(mine.map(l => l.id));
     const stageCount = Object.entries(mine.reduce((a, l) => ({ ...a, [l.stage]: (a[l.stage] || 0) + 1 }), {})).map(([stage, n]) => ({ stage, n }));
     const mb = live.filter(b => (b.sold_by === me.id || b.broker_id === me.id) && b.booking_date.startsWith(month));
     const cm = commissions.filter(c => c.user_id === me.id);
-    return { role: me.role, pipeline: stageCount,
-      visits: visits.filter(v => ['scheduled', 'confirmed'].includes(v.status) && (v.agent_id === me.id || leads.find(l => l.id === v.lead_id)?.broker_id === me.id)).map(v => { const l = leads.find(x => x.id === v.lead_id); return { ...v, name: l?.name, phone: l?.phone, lead_id: l?.id }; }),
+    const visitRows = visits.filter(v => ['scheduled', 'confirmed'].includes(v.status) && myLeadIds.has(v.lead_id) && new Date(v.scheduled_at) > Date.now() - 4 * 3600e3);
+    return { role: me.role, pipeline: stageCount, visits_count: visitRows.length,
+      visits: visitRows.slice(0, 8).map(v => { const l = leads.find(x => x.id === v.lead_id); return { ...v, name: l?.name, phone: l?.phone, lead_id: l?.id }; }),
       followups: mine.filter(l => l.followup_at && !['booked', 'lost'].includes(l.stage)).sort((a, b) => (a.followup_at || '').localeCompare(b.followup_at || '')).slice(0, 8),
       sold: { units: mb.length, value: mb.reduce((s, b) => s + b.deal_value, 0) },
       earnings: { pending: cm.filter(c => ['pending', 'approved'].includes(c.status)).reduce((s, c) => s + c.amount, 0), paid: cm.filter(c => c.status === 'paid').reduce((s, c) => s + c.amount, 0), month: cm.filter(c => c.created_at.startsWith(month) && c.status !== 'void').reduce((s, c) => s + c.amount, 0) },
@@ -268,8 +273,8 @@ on('POST', '/api/team', (_, b) => {
 on('PATCH', '/api/team/:id', (p, b) => { need('admin'); const u = U(p.id); if (!u) throw err(404, 'Not found'); Object.assign(u, { name: b.name ?? u.name, email: b.email ?? u.email, phone: b.phone ?? u.phone, active: b.active ?? u.active, profile: merge(u.profile, b.profile || {}) }); return clone(u); });
 on('POST', '/api/team/:id/reset-password', () => { need('admin'); return { temp_password: 'Nv' + Math.random().toString(36).slice(2, 8) }; });
 on('PUT', '/api/org', (_, b) => { need('admin'); Object.assign(org, { name: b.name ?? org.name, phone: b.phone ?? org.phone, email: b.email ?? org.email, address: b.address ?? org.address, rera_promoter: b.rera_promoter ?? org.rera_promoter, settings: merge(org.settings, b.settings || {}) }); return clone(org); });
-on('GET', '/api/integrations', () => { need('admin'); return { leadsathi: { webhook_url: `https://nivaas.yourdomain.com/bridge/leadsathi/${org.id}?secret=${org.bridge_secret}` }, whatsapp: { webhook_url: 'https://nivaas.yourdomain.com/webhooks/whatsapp', verify_token: 'nivaas-verify-123', numbers: waNumbers.map(w => ({ ...w, agent: U(w.user_id)?.name || null })) } }; });
-on('POST', '/api/integrations/whatsapp', (_, b) => { need('admin'); if (!b.phone_number_id || !b.access_token) throw err(400, 'Phone number ID and access token are required'); const w = { id: nid('wa'), org_id: 'org', user_id: b.user_id || null, phone_number_id: b.phone_number_id, display: b.display }; waNumbers.push(w); return w; });
+on('GET', '/api/integrations', () => { need('admin'); return { leadsathi: { webhook_url: `https://nivaas.yourdomain.com/bridge/leadsathi/${org.id}?secret=${org.bridge_secret}` }, whatsapp: { webhook_url: 'https://nivaas.yourdomain.com/webhooks/whatsapp', verify_token: 'nivaas-verify-123', webhook_enabled: false, numbers: waNumbers.map(w => ({ ...w, agent: U(w.user_id)?.name || null })) } }; });
+on('POST', '/api/integrations/whatsapp', (_, b) => { need('admin'); if (!b.phone_number_id || !b.access_token) throw err(400, 'Phone number ID and access token are required'); let w = waNumbers.find(number => number.phone_number_id === b.phone_number_id); if (w) Object.assign(w, { user_id: b.user_id || null, waba_id: b.waba_id || null, display: b.display, access_token: b.access_token }); else { w = { id: nid('wa'), org_id: 'org', user_id: b.user_id || null, phone_number_id: b.phone_number_id, waba_id: b.waba_id || null, display: b.display, access_token: b.access_token }; waNumbers.push(w); } return { id: w.id, display: w.display, phone_number_id: w.phone_number_id, waba_id: w.waba_id, user_id: w.user_id }; });
 on('DELETE', '/api/integrations/whatsapp/:id', p => { const i = waNumbers.findIndex(w => w.id === p.id); if (i >= 0) waNumbers.splice(i, 1); return null; });
 on('POST', '/api/integrations/rotate-secret', () => { org.bridge_secret = Math.random().toString(16).slice(2); return null; });
 

@@ -10,6 +10,7 @@ export const DEFAULTS = {
     respect_availability: true,      // skip agents marked "away"
   },
   tickets: { sla_hours: 24, urgent_sla_hours: 6, notify_sales_agent: true },
+  visits: { reminder_hours: [48, 24] },
   holds: { hours: 48 },              // how long a unit hold lasts
   booking: { default_booking_pct: 10 },
   emi: { rate: 8.6, tenure_years: 20, down_pct: 20 },
@@ -57,6 +58,12 @@ export function validateSettings(input) {
         if (key === 'account_number' && clean && !/^\d{6,34}$/.test(clean)) fail('payment.account_number must contain 6 to 34 digits');
         if (key === 'ifsc_code' && clean && !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(clean.toUpperCase())) fail('payment.ifsc_code must be a valid IFSC code');
         out[section][key] = key === 'ifsc_code' ? clean.toUpperCase() : clean;
+      } else if (section === 'visits' && key === 'reminder_hours') {
+        const allowed = [2, 24, 48, 72, 168];
+        if (!Array.isArray(value) || value.length > allowed.length || value.some(hours => !allowed.includes(hours)) || new Set(value).size !== value.length) {
+          fail('visits.reminder_hours must contain unique reminder times from the available options');
+        }
+        out.visits[key] = [...value].sort((a, b) => b - a);
       } else if (typeof DEFAULTS[section][key] === 'boolean') {
         if (typeof value !== 'boolean') fail(`${path} must be true or false`);
         out[section][key] = value;

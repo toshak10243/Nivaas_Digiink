@@ -50,6 +50,23 @@ export async function runMigrations() {
     ALTER TABLE leads ADD COLUMN IF NOT EXISTS followup_at timestamptz;
     ALTER TABLE leads ADD COLUMN IF NOT EXISTS followup_type text DEFAULT 'call';
     ALTER TABLE leads ADD COLUMN IF NOT EXISTS followup_note text;
+    ALTER TABLE leads ADD COLUMN IF NOT EXISTS whatsapp_consent text NOT NULL DEFAULT 'unknown';
+    ALTER TABLE leads ADD COLUMN IF NOT EXISTS whatsapp_consent_updated_at timestamptz;
+    ALTER TABLE leads ADD COLUMN IF NOT EXISTS campaign_name text;
+    ALTER TABLE leads ADD COLUMN IF NOT EXISTS adset_name text;
+    ALTER TABLE leads ADD COLUMN IF NOT EXISTS ad_name text;
+    CREATE TABLE IF NOT EXISTS meta_pages (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(), org_id uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+      page_id text NOT NULL, page_name text, access_token text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(), UNIQUE (page_id)
+    );
+    CREATE TABLE IF NOT EXISTS meta_lead_events (
+      leadgen_id text PRIMARY KEY, org_id uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+      lead_id uuid REFERENCES leads(id) ON DELETE SET NULL, received_at timestamptz NOT NULL DEFAULT now()
+    );
+    ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS delivery_status text;
+    ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS delivery_error text;
+    ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS status_updated_at timestamptz;
 
     DO $$
     BEGIN
@@ -59,7 +76,9 @@ export async function runMigrations() {
     END $$;
 
     ALTER TABLE site_visits ADD CONSTRAINT site_visits_status_check
-      CHECK (status IN ('scheduled','confirmed','done','no_show','cancelled','rescheduled'));
+      CHECK (status IN ('to_confirm','scheduled','confirmed','done','no_show','cancelled','rescheduled'));
+
+    ALTER TABLE site_visits ALTER COLUMN scheduled_at DROP NOT NULL;
 
     ALTER TABLE site_visits ADD COLUMN IF NOT EXISTS visitors_count int DEFAULT 1;
     ALTER TABLE site_visits ADD COLUMN IF NOT EXISTS transport text;
@@ -67,6 +86,26 @@ export async function runMigrations() {
     ALTER TABLE site_visits ADD COLUMN IF NOT EXISTS interested_unit text;
     ALTER TABLE site_visits ADD COLUMN IF NOT EXISTS rating int;
     ALTER TABLE site_visits ADD COLUMN IF NOT EXISTS evidence_passport jsonb DEFAULT '{}'::jsonb;
+    ALTER TABLE site_visits ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'employee';
+    ALTER TABLE site_visits ADD COLUMN IF NOT EXISTS scheduled_by uuid REFERENCES users(id) ON DELETE SET NULL;
+    ALTER TABLE site_visits ADD COLUMN IF NOT EXISTS chat_id uuid REFERENCES chats(id) ON DELETE SET NULL;
+    ALTER TABLE site_visits ADD COLUMN IF NOT EXISTS confirmation_note text;
+    DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'site_visits_chat_id_fkey') THEN
+        ALTER TABLE site_visits ADD CONSTRAINT site_visits_chat_id_fkey FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE SET NULL;
+      END IF;
+    END $$;
+
+    CREATE TABLE IF NOT EXISTS monthly_report_deliveries (
+      org_id uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+      report_month date NOT NULL,
+      admin_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status text NOT NULL DEFAULT 'sending' CHECK (status IN ('sending','sent')),
+      sent_at timestamptz,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (org_id, report_month, admin_id)
+    );
+    ALTER TABLE monthly_report_deliveries ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
 
     -- Customer Construction Progress Tracker
     ALTER TABLE project_updates ADD COLUMN IF NOT EXISTS tower_id text;

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { api } from '../api/index.js';
 import { Icon, Field, Seg, Switch, useLoad, Loading, copyText } from '../components/ui.jsx';
 
-const TABS = [['company', 'Company', 'building'], ['routing', 'Lead routing', 'funnel'], ['service', 'Complaints & holds', 'wrench'], ['payments', 'Buyer payments', 'receipt'], ['integrations', 'LeadSathi & WhatsApp', 'link'], ['password', 'My password', 'lock']];
+const TABS = [['company', 'Company', 'building'], ['routing', 'Lead routing', 'funnel'], ['service', 'Complaints & holds', 'wrench'], ['visits', 'Site visit reminders', 'calendar'], ['payments', 'Buyer payments', 'receipt'], ['integrations', 'LeadSathi & WhatsApp', 'link'], ['password', 'My password', 'lock']];
 
 export default function Settings({ me, say, reloadMe }) {
   const [tab, setTab] = useState('company');
@@ -10,7 +10,7 @@ export default function Settings({ me, say, reloadMe }) {
   const s = org.settings;
   const setS = (g, k, v) => setOrg(o => ({ ...o, settings: { ...o.settings, [g]: { ...o.settings[g], [k]: v } } }));
   const save = async () => { try { const r = await api.put('/api/org', { name: org.name, phone: org.phone, email: org.email, address: org.address, rera_promoter: org.rera_promoter, settings: org.settings }); setOrg(r); reloadMe(); say('Settings saved'); } catch (e) { say(e.message); } };
-  const savable = ['company', 'routing', 'service', 'payments'].includes(tab);
+  const savable = ['company', 'routing', 'service', 'visits', 'payments'].includes(tab);
 
   return (
     <div className="page settings">
@@ -39,6 +39,18 @@ export default function Settings({ me, say, reloadMe }) {
             <div style={{ display: 'flex', gap: 6 }}><input className="input" style={{ width: 80 }} aria-label="Rate %" value={s.emi.rate} onChange={e => setS('emi', 'rate', Number(e.target.value))} /><input className="input" style={{ width: 80 }} aria-label="Years" value={s.emi.tenure_years} onChange={e => setS('emi', 'tenure_years', Number(e.target.value))} /><input className="input" style={{ width: 80 }} aria-label="Down %" value={s.emi.down_pct} onChange={e => setS('emi', 'down_pct', Number(e.target.value))} /></div></Row>
         </div></section>}
 
+        {tab === 'visits' && <section className="card"><div className="card-h" style={{ flexDirection: 'column', alignItems: 'flex-start' }}><h3>Site visit reminders</h3><span className="muted">Choose when the CRM should notify assigned staff and buyers with a portal account. Reminders appear in their CRM notifications.</span></div><div className="card-b setlist">
+          {[['168', '1 week before'], ['72', '3 days before'], ['48', '2 days before'], ['24', '1 day before'], ['2', '2 hours before']].map(([hours, label]) => {
+            const value = Number(hours);
+            const selected = (s.visits?.reminder_hours || []).includes(value);
+            return <label key={hours} className="setrow" style={{ cursor: 'pointer' }}><div><b>{label}</b><span>Send a scheduled reminder before the visit date and time.</span></div><div className="ctl"><input type="checkbox" checked={selected} onChange={event => {
+              const next = new Set(s.visits?.reminder_hours || []);
+              if (event.target.checked) next.add(value); else next.delete(value);
+              setS('visits', 'reminder_hours', [...next].sort((a, b) => b - a));
+            }} aria-label={label} /></div></label>;
+          })}
+        </div></section>}
+
         {tab === 'payments' && <section className="card"><div className="card-h"><div><h3>Buyer payment instructions</h3><span className="muted">Verified instructions are shown to buyers in their payment tracker.</span></div></div><div className="card-b">
           <div className="kgrid">
             <Field label="UPI ID" id="pay-upi"><input id="pay-upi" className="input" placeholder="builder@bank" value={s.payment.upi_id} onChange={e => setS('payment', 'upi_id', e.target.value)} /></Field>
@@ -54,7 +66,7 @@ export default function Settings({ me, say, reloadMe }) {
 
         {tab === 'integrations' && <Integrations me={me} say={say} />}
         {tab === 'password' && <Password say={say} />}
-        {savable && <div className="savebar"><span className="muted">Changes apply to new leads and complaints right away.</span><button className="btn sun" onClick={save}>Save changes</button></div>}
+        {savable && <div className="savebar"><span className="muted">Changes are saved to your company settings.</span><button className="btn sun" onClick={save}>Save changes</button></div>}
       </div>
     </div>
   );
@@ -64,11 +76,27 @@ const Row = ({ l, d, children }) => <div className="setrow"><div><b>{l}</b>{d &&
 function Integrations({ say }) {
   const [d, reload] = useLoad(() => api.get('/api/integrations'), []);
   const [team] = useLoad(() => api.get('/api/team?role=sales'), []);
-  const [f, setF] = useState({ display: '', phone_number_id: '', access_token: '', user_id: '' });
+  const [f, setF] = useState({ display: '', phone_number_id: '', waba_id: '', access_token: '', user_id: '' });
+  const [metaPage, setMetaPage] = useState({ page_id: '', page_name: '', access_token: '' });
+  const [editingNumber, setEditingNumber] = useState(null);
   if (!d) return <Loading />;
-  const add = async () => { try { await api.post('/api/integrations/whatsapp', f); say('Number connected'); setF({ display: '', phone_number_id: '', access_token: '', user_id: '' }); reload(); } catch (e) { say(e.message); } };
+  const resetForm = () => { setF({ display: '', phone_number_id: '', waba_id: '', access_token: '', user_id: '' }); setEditingNumber(null); };
+  const editNumber = number => {
+    setEditingNumber(number.id);
+    setF({ display: number.display || '', phone_number_id: number.phone_number_id, waba_id: number.waba_id || '', access_token: '', user_id: number.user_id || '' });
+  };
+  const add = async () => { try { await api.post('/api/integrations/whatsapp', f); say(editingNumber ? 'WhatsApp number updated' : 'Number connected'); resetForm(); reload(); } catch (e) { say(e.message); } };
+  const connectPage = async () => { try { await api.post('/api/integrations/meta-pages', metaPage); setMetaPage({ page_id: '', page_name: '', access_token: '' }); reload(); say('Facebook Page connected for Lead Ads'); } catch (e) { say(e.message); } };
   return (
     <>
+      <section className="card"><div className="card-h" style={{ flexDirection: 'column', alignItems: 'flex-start' }}><h3>Facebook &amp; Instagram Lead Ads</h3><span className="muted">Connect a Facebook Page that owns your lead forms. Instagram Lead Ads linked to this Page can use the same webhook.</span></div>
+        <div className="card-b" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div className="kgrid"><Field label="Meta webhook URL"><div className="sharebox"><span className="mono" style={{ wordBreak: 'break-all' }}>{d.meta.webhook_url}</span><button className="btn sm" onClick={() => copyText(d.meta.webhook_url, say)}><Icon name="copy" />Copy</button></div></Field><Field label="Webhook verify token"><div className="sharebox"><span className="mono">{d.meta.verify_token}</span></div></Field></div>
+          <p className="hint">Signature validation: {d.meta.app_secret_configured ? 'configured' : 'not configured — set META_APP_SECRET before subscribing the webhook'}. Subscribe the Page to the <b>leadgen</b> webhook field in Meta App Dashboard. The app needs the appropriate Lead Ads permissions and Page access token.</p>
+          <div className="list">{d.meta.pages.map(page => <div className="lrow" key={page.id}><Icon name="building" style={{ width: 18, height: 18 }} /><b style={{ flex: 1 }}>{page.page_name || page.page_id}</b><span className="muted">Page {page.page_id} · token {page.token_configured ? 'saved' : 'missing'}</span><button className="iconbtn" aria-label="Disconnect Facebook Page" onClick={async () => { await api.del('/api/integrations/meta-pages/' + page.id); reload(); say('Facebook Page disconnected'); }}><Icon name="trash" /></button></div>)}</div>
+          <b>Connect a Facebook Page</b><div className="kgrid"><Field label="Page ID"><input className="input" value={metaPage.page_id} onChange={e => setMetaPage({ ...metaPage, page_id: e.target.value })} /></Field><Field label="Page name"><input className="input" value={metaPage.page_name} onChange={e => setMetaPage({ ...metaPage, page_name: e.target.value })} /></Field><Field label="Page access token"><input className="input" type="password" autoComplete="new-password" value={metaPage.access_token} onChange={e => setMetaPage({ ...metaPage, access_token: e.target.value })} /></Field></div>
+          <button className="btn sun" disabled={!metaPage.page_id || !metaPage.access_token} onClick={connectPage}><Icon name="plus" />Connect Page</button>
+        </div></section>
       <section className="card"><div className="card-h" style={{ flexDirection: 'column', alignItems: 'flex-start' }}><h3>LeadSathi</h3><span className="muted">LeadSathi’s AI talks to new ad leads on your main number, then hands qualified ones to Nivaas.</span></div>
         <div className="card-b" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <ol className="steps-ol"><li>Open LeadSathi → Settings → Integrations.</li><li>Paste this URL in <b>Webhook URL</b> and save.</li><li>In LeadSathi → Settings → Business, set the industry to <b>Real estate</b>. The AI then asks for configuration, budget, area, purpose, timeline and a visit time.</li></ol>
@@ -77,16 +105,17 @@ function Integrations({ say }) {
         </div></section>
       <section className="card"><div className="card-h" style={{ flexDirection: 'column', alignItems: 'flex-start' }}><h3>WhatsApp numbers</h3><span className="muted">One WhatsApp Business account, many numbers: a main number plus one per sales agent for their AI twin.</span></div>
         <div className="card-b" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div className="kgrid"><Field label="Webhook URL (Meta → WhatsApp → Configuration)"><div className="sharebox"><span className="mono">{d.whatsapp.webhook_url}</span></div></Field><Field label="Verify token"><div className="sharebox"><span className="mono">{d.whatsapp.verify_token}</span></div></Field></div>
-          <div className="list">{d.whatsapp.numbers.map(n => <div key={n.id} className="lrow"><Icon name="wa" style={{ width: 18, height: 18 }} /><b style={{ flex: 1 }}>{n.display}</b><span className="muted">{n.agent ? `${n.agent} · AI twin` : 'Main number'}</span><button className="iconbtn" aria-label="Remove" onClick={async () => { await api.del('/api/integrations/whatsapp/' + n.id); reload(); }}><Icon name="trash" /></button></div>)}</div>
-          <b>Connect a number</b>
+          <div className="kgrid"><Field label="Webhook URL (Meta → WhatsApp → Configuration)"><div className="sharebox"><span className="mono">{d.whatsapp.webhook_url}</span></div></Field><Field label="Verify token"><div className="sharebox"><span className="mono">{d.whatsapp.verify_token}</span></div></Field><Field label="Webhook endpoint"><div className="sharebox">{d.whatsapp.webhook_enabled ? 'Enabled on server' : 'Disabled — configure server webhook settings'}</div></Field></div>
+          <div className="list">{d.whatsapp.numbers.map(n => <div key={n.id} className="lrow"><Icon name="wa" style={{ width: 18, height: 18 }} /><b style={{ flex: 1 }}>{n.display || n.phone_number_id}</b><span className="muted">{n.agent ? `${n.agent} · AI twin` : 'Main number'} · {n.waba_id ? 'WABA ID set' : 'WABA ID missing'}</span><button className="btn sm ghost" onClick={() => editNumber(n)}>Configure</button><button className="iconbtn" aria-label="Remove" onClick={async () => { await api.del('/api/integrations/whatsapp/' + n.id); reload(); }}><Icon name="trash" /></button></div>)}</div>
+          <b>{editingNumber ? 'Update WhatsApp number' : 'Connect a number'}</b>
           <div className="kgrid">
             <Field label="Number (display)" id="wa-d"><input id="wa-d" className="input" placeholder="+91 98290 22222" value={f.display} onChange={e => setF({ ...f, display: e.target.value })} /></Field>
             <Field label="Phone number ID" id="wa-p" hint="WhatsApp Manager → Phone numbers"><input id="wa-p" className="input" value={f.phone_number_id} onChange={e => setF({ ...f, phone_number_id: e.target.value })} /></Field>
-            <Field label="Access token" id="wa-t" hint="System user token with whatsapp_business_messaging"><input id="wa-t" className="input" type="password" value={f.access_token} onChange={e => setF({ ...f, access_token: e.target.value })} /></Field>
+            <Field label="WhatsApp Business Account ID" id="wa-waba" hint="Required for template sync. Token also needs whatsapp_business_management."><input id="wa-waba" className="input" value={f.waba_id} onChange={e => setF({ ...f, waba_id: e.target.value })} /></Field>
+            <Field label="Access token" id="wa-t" hint="System user token with whatsapp_business_messaging and whatsapp_business_management"><input id="wa-t" className="input" type="password" value={f.access_token} onChange={e => setF({ ...f, access_token: e.target.value })} /></Field>
             <Field label="Belongs to" id="wa-u"><select id="wa-u" className="select" value={f.user_id} onChange={e => setF({ ...f, user_id: e.target.value })}><option value="">Builder main number</option>{(team || []).map(u => <option key={u.id} value={u.id}>{u.name} (AI twin)</option>)}</select></Field>
           </div>
-          <button className="btn sun" style={{ alignSelf: 'flex-start' }} disabled={!f.phone_number_id || !f.access_token} onClick={add}><Icon name="plus" />Connect</button>
+          <div className="inline-actions"><button className="btn sun" disabled={!f.phone_number_id || !f.waba_id || !f.access_token} onClick={add}><Icon name="plus" />{editingNumber ? 'Save configuration' : 'Connect'}</button>{editingNumber && <button className="btn ghost" onClick={resetForm}>Cancel</button>}</div>
         </div></section>
     </>
   );

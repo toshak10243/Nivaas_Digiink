@@ -52,6 +52,19 @@ function Ledger({ admin, say, me }) {
   const shown = rows.filter(r => f === 'all' || r.status === f);
   const tot = s => rows.filter(r => r.status === s).reduce((a, r) => a + r.amount, 0);
   const set = async (r, status) => { await api.patch('/api/commissions/' + r.id, { status }); say(status === 'paid' ? `${inr(r.amount)} marked paid to ${r.name}` : 'Updated'); reload(); };
+  const downloadStatement = () => {
+    const quote = value => `"${String(value ?? '').replaceAll('"', '""')}"`;
+    const data = [
+      ['Booking date', 'Project', 'Unit', 'Deal value', 'Commission basis', 'Commission amount', 'Status', 'Paid date'],
+      ...rows.map(r => [r.booking_date ? new Date(r.booking_date).toLocaleDateString('en-IN') : '', r.project_name, r.unit_no, r.deal_value, r.basis, r.amount, r.status, r.paid_on ? new Date(r.paid_on).toLocaleDateString('en-IN') : '']),
+    ].map(row => row.map(quote).join(',')).join('\r\n');
+    const url = URL.createObjectURL(new Blob([`\uFEFF${data}`], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `nivaas-commission-statement-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
   return (
     <>
       <section className="kpis three">
@@ -59,7 +72,9 @@ function Ledger({ admin, say, me }) {
         <div className="card kpi"><span className="eyebrow">Approved, to pay</span><b className="num">{money(tot('approved'))}</b></div>
         <div className="card kpi"><span className="eyebrow">Paid</span><b className="num">{money(tot('paid'))}</b></div>
       </section>
-      <div className="invbar"><Seg value={f} onChange={setF} label="Status" options={[['all', 'All'], ['pending', 'Pending'], ['approved', 'Approved'], ['paid', 'Paid'], ['void', 'Void']]} /></div>
+      <div className="invbar"><Seg value={f} onChange={setF} label="Status" options={[['all', 'All'], ['pending', 'Pending'], ['approved', 'Approved'], ['paid', 'Paid'], ['void', 'Void']]} />
+        {me.user.role === 'broker' && <button className="btn" onClick={downloadStatement} disabled={!rows.length}>Download commission statement</button>}
+      </div>
       {shown.length === 0 ? <Empty icon="rupee" title="Nothing here yet" /> : (
         <div className="card tablewrap"><table>
           <thead><tr>{admin && <th>Person</th>}<th>Unit</th><th>Type</th><th>Basis</th><th>Amount</th><th>Status</th><th>Booked</th>{admin && <th />}</tr></thead>

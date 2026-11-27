@@ -4,6 +4,7 @@ import { Icon, Avatar, Switch, Seg, Modal, Field, useLoad, Loading, Empty } from
 import { ago, time, phone, stageLabel } from '../lib/format.js';
 
 const TRY = ['302-F available hai?', 'EMI kitni banegi?', 'Best price kya hoga?', 'Kal 11 baje visit kar sakte hain', '2 BHK ka rate kya hai?'];
+const deliveryLabel = status => status === 'accepted' ? 'Accepted' : status;
 
 export default function Chats({ me, say, go, params, reloadMe }) {
   const [list, reload] = useLoad(() => api.get('/api/chats'), []);
@@ -41,7 +42,7 @@ export default function Chats({ me, say, go, params, reloadMe }) {
               <button key={c.id} className="conv" aria-selected={c.id === openId} onClick={() => go('chats/' + c.id)}>
                 <Avatar name={c.name} />
                 <div style={{ minWidth: 0 }}><div className="n">{c.last_sender === 'customer' && <span className="ud" />}{c.name}</div>
-                  <div className="p">{c.last_sender === 'ai' ? 'AI: ' : c.last_sender === 'agent' ? 'You: ' : ''}{c.last_body}</div></div>
+                  <div className="p">{c.last_sender === 'ai' ? 'AI: ' : c.last_sender === 'agent' ? 'You: ' : ''}{c.last_body}{['agent', 'ai'].includes(c.last_sender) && c.last_delivery_status ? ` · ${deliveryLabel(c.last_delivery_status)}` : ''}</div></div>
                 <div className="r"><span className="time">{c.last_at ? ago(c.last_at) : ''}</span>{!c.ai_enabled && <span className="pill cold">Manual</span>}{me.user.role === 'admin' && <span className="muted" style={{ fontSize: 11 }}>{c.agent}</span>}</div>
               </button>
             ))}
@@ -62,10 +63,23 @@ function Thread({ id, me, say, go, onChange }) {
   const [testText, setTestText] = useState('');
   const [testError, setTestError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [templates, setTemplates] = useState(null);
+  const [templatesBusy, setTemplatesBusy] = useState(false);
+  const [templatesError, setTemplatesError] = useState('');
   const box = useRef(null);
   useEffect(() => { box.current && (box.current.scrollTop = box.current.scrollHeight); }, [c?.messages?.length, testMessages.length, busy]);
+  useEffect(() => { const timer = setInterval(reload, 10000); return () => clearInterval(timer); }, [id, reload]);
   if (!c) return <section className="ichat"><Loading /></section>;
-  const send = async () => { const t = text.trim(); if (!t) return; setBusy(true); try { await api.post(`/api/chats/${id}/messages`, { text: t }); setText(''); reload(); onChange(); } catch (e) { say(e.message); } setBusy(false); };
+  const send = async () => { const t = text.trim(); if (!t) return; setBusy(true); try { await api.post(`/api/chats/${id}/messages`, { text: t }); setText(''); reload(); onChange(); } catch (e) { say(e.message); await reload(); } setBusy(false); };
+  const openTemplates = async (force = false) => {
+    setTemplatesOpen(true);
+    if (templates && !force) return;
+    setTemplatesBusy(true); setTemplatesError('');
+    try { setTemplates(await api.get(`/api/whatsapp/templates?wa_number_id=${encodeURIComponent(c.wa_number_id)}`)); }
+    catch (error) { setTemplatesError(error.message); }
+    setTemplatesBusy(false);
+  };
   const simulate = async (t = cust) => {
     t = t.trim(); if (!t) return; setBusy(true); setCust('');
     try { const r = await api.post(`/demo/chats/${id}/customer`, { text: t }); await reload(); onChange(); if (r.pending) say(`You are available, so the AI twin waits ${r.pending} min for you. Reply yourself or tap “Let AI reply now”.`); }
@@ -92,7 +106,7 @@ function Thread({ id, me, say, go, onChange }) {
         <Avatar name={c.name} />
         <div className="who"><b>{c.name}</b><span>{phone(c.phone)} · on {c.display}</span></div>
         <button className="btn sm ghost" onClick={() => go('leads/' + c.lead_id)}>Lead</button>
-        <a
+        {c.whatsapp_consent === 'opted_out' ? <span className="btn sm ghost">Customer opted out</span> : <a
           className="btn sm wa-btn"
           href={`https://wa.me/${String(c.phone || '').replace(/\D/g, '')}`}
           target="_blank"
@@ -100,13 +114,14 @@ function Thread({ id, me, say, go, onChange }) {
           title="Open in WhatsApp Web"
         >
           <Icon name="wa" />WhatsApp Web
-        </a>
+        </a>}
         <div className="aitoggle"><span>{c.ai_enabled ? 'AI twin on' : 'You are replying'}</span><Switch on={c.ai_enabled} label="AI twin for this chat" onChange={async v => { await api.patch('/api/chats/' + id, { ai_enabled: v }); reload(); onChange(); }} /></div>
       </div>
       <div className="msgs" ref={box} aria-live="polite">
         {c.messages.map(m => m.sender === 'system' ? <div key={m.id} className="sysmsg">{m.body}</div> : (
           <div key={m.id} className={'bub ' + (m.sender === 'agent' ? 'owner' : m.sender)}>
             <span className="by">{m.sender === 'ai' ? <><Icon name="spark" />AI twin</> : m.sender === 'agent' ? 'You' : c.name.split(' ')[0]}</span>{m.body}<span className="t">{time(m.created_at)}</span>
+            {['agent', 'ai'].includes(m.sender) && m.delivery_status && <span className={`wa-delivery ${m.delivery_status}`} title={m.delivery_error || undefined}>{deliveryLabel(m.delivery_status)}{m.delivery_error ? ` · ${m.delivery_error}` : ''}</span>}
           </div>
         ))}
         {testMessages.length > 0 && <div className="sysmsg">Demo conversation ? visible only in this browser, not sent to WhatsApp.</div>}
@@ -134,13 +149,57 @@ function Thread({ id, me, say, go, onChange }) {
             </form>
           </div>
         )}
+        {api.mode !== 'demo' && <button className="btn sm" type="button" onClick={openTemplates}><Icon name="receipt" />Approved templates</button>}
         <form className="sendrow" onSubmit={e => { e.preventDefault(); send(); }}>
           <input className="input" aria-label="Your reply" placeholder="Reply as yourself…" value={text} onChange={e => setText(e.target.value)} />
           <button className="btn ink" disabled={busy || !text.trim()}><Icon name="send" />Send</button>
         </form>
       </div>
+      {templatesOpen && <TemplateSendModal templates={templates} loading={templatesBusy} error={templatesError} consent={c.whatsapp_consent || 'unknown'} onClose={() => setTemplatesOpen(false)} onRetry={() => openTemplates(true)} onSend={async payload => {
+        setBusy(true);
+        try { await api.post(`/api/chats/${id}/templates`, payload); await reload(); onChange(); setTemplatesOpen(false); say('WhatsApp template accepted for delivery'); }
+        catch (error) { say(error.message); await reload(); }
+        setBusy(false);
+      }} />}
     </section>
   );
+}
+
+function TemplateSendModal({ templates, loading, error, consent, onClose, onRetry, onSend }) {
+  const approved = (templates || []).filter(item => String(item.status).toUpperCase() === 'APPROVED');
+  const supported = approved.filter(item => {
+    const components = item.components || [];
+    const body = components.find(component => String(component.type).toUpperCase() === 'BODY')?.text || '';
+    const bodyParams = [...body.matchAll(/\{\{\s*(\d+)\s*\}\}/g)];
+    return !components.some(component => {
+      const type = String(component.type).toUpperCase();
+      return type === 'HEADER' && (component.format !== 'TEXT' || /\{\{/.test(component.text || '')) ||
+        type === 'BUTTONS' && (component.buttons || []).some(button => /\{\{/.test(button.url || ''));
+    }) && (!/\{\{/.test(body) || (bodyParams.length > 0 && !body.replace(/\{\{\s*\d+\s*\}\}/g, '').includes('{{')));
+  });
+  const [key, setKey] = useState('');
+  const selected = supported.find(item => `${item.name}:${item.language}` === key) || supported[0];
+  const body = (selected?.components || []).find(component => String(component.type).toUpperCase() === 'BODY')?.text || '';
+  const variableMatches = [...body.matchAll(/\{\{\s*(\d+)\s*\}\}/g)];
+  const [values, setValues] = useState([]);
+  useEffect(() => { setValues(Array(variableMatches.length).fill('')); }, [key, selected?.name, selected?.language]);
+  const submit = event => {
+    event.preventDefault();
+    if (!selected || values.some(value => !value.trim())) return;
+    onSend({ name: selected.name, language: selected.language, parameters: values });
+  };
+  return <Modal title="Approved WhatsApp templates" onClose={onClose} footer={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn sun" form="wa-template-send" disabled={!selected || consent !== 'opted_in' || values.length !== variableMatches.length || values.some(value => !value.trim())}>Send template</button></>}>
+    {loading ? <Loading /> : error ? <div className="note" role="alert">{error} <button className="btn sm" onClick={onRetry}>Retry</button></div> : <form id="wa-template-send" onSubmit={submit} style={{ display: 'grid', gap: 12 }}>
+      <div className="note">Contact preference: <b>{consent.replace('_', ' ')}</b>. Templates require recorded customer opt-in.</div>
+      {supported.length === 0 ? <Empty icon="receipt" title="No supported approved templates">Check the WABA ID and Meta token permissions. Templates with dynamic header or button fields are not supported in chat yet.</Empty> : <>
+        <Field label="Approved template" id="wa-template">
+          <select id="wa-template" className="select" value={key || `${supported[0].name}:${supported[0].language}`} onChange={event => setKey(event.target.value)}>{supported.map(item => <option key={`${item.name}:${item.language}`} value={`${item.name}:${item.language}`}>{item.name} · {item.language} · {item.category}</option>)}</select>
+        </Field>
+        <div className="card" style={{ padding: 12, background: 'var(--panel-2)' }}><b>{selected?.name} <span className="pill ok">APPROVED</span></b><p className="muted" style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }}>{body || 'No body text'}</p></div>
+        {variableMatches.map((match, index) => <Field key={`${selected?.name}-${index}`} label={`Value for {{${match[1]}}}`}><input className="input" maxLength={1024} value={values[index] || ''} onChange={event => setValues(previous => previous.map((value, item) => item === index ? event.target.value : value))} /></Field>)}
+      </>}
+    </form>}
+  </Modal>;
 }
 
 function NewChatModal({ me, say, go, onClose, onDone }) {
@@ -277,7 +336,7 @@ function NewChatModal({ me, say, go, onClose, onDone }) {
           </div>
         )}
 
-        <Field label="Message Template" id="nc-tmpl">
+        <Field label="Message draft" id="nc-tmpl">
           <select
             id="nc-tmpl"
             className="select"
@@ -290,6 +349,7 @@ function NewChatModal({ me, say, go, onClose, onDone }) {
             <option value="custom">✏️ Custom Message</option>
           </select>
         </Field>
+        <span className="hint">Outside the 24-hour reply window, Nivaas sends only the configured Meta-approved intro template. Open the chat to choose another approved template.</span>
 
         {template === 'custom' ? (
           <Field label="Your Message" id="nc-custom">
@@ -308,7 +368,6 @@ function NewChatModal({ me, say, go, onClose, onDone }) {
             <div className="msgpreview">{finalMsg}</div>
           </div>
         )}
-        <small className="muted">Outside WhatsApp's 24-hour reply window, Nivaas sends the approved intro template. Your selected message can be sent after the customer replies.</small>
       </div>
     </Modal>
   );

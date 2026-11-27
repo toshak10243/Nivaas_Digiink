@@ -1,11 +1,12 @@
 // No login needed: the shareable project/flat page, its enquiry form, and the LeadSathi bridge.
 import { Router } from 'express';
-import { one, many, q } from '../db.js';
+import { one, many, q, tx } from '../db.js';
 import { h, fail } from '../lib/auth.js';
 import { costSheet } from '../lib/pricing.js';
 import { settingsOf } from '../settings.js';
 import { notify, logLead } from '../services/notify.js';
 import { assignLead } from '../services/routing.js';
+import { lockLeadVisits } from '../services/site-visits.js';
 import { normPhone } from '../services/meta.js';
 import { rateLimit } from '../lib/rate-limit.js';
 import { phone as validPhone, email as validEmail, futureDateTime, text, uuid } from '../lib/validate.js';
@@ -53,6 +54,8 @@ r.post('/p/:token/enquire', rateLimit({ windowMs: 10 * 60_000, limit: 8, key: re
   const link = await one(`SELECT s.*, u.role FROM share_links s JOIN users u ON u.id = s.created_by WHERE s.token = $1`, [req.params.token]);
   if (!link) throw fail(404, 'This link has expired');
   const { name, phone, message, unit_no, visit } = req.body || {};
+  const whatsappOptIn = req.body?.whatsapp_opt_in === true;
+  if (req.body?.whatsapp_opt_in !== undefined && typeof req.body.whatsapp_opt_in !== 'boolean') throw fail(400, 'WhatsApp preference must be true or false');
   const cleanName = text(name, 'Name', { optional: false, max: 160 });
   const ph = normPhone(validPhone(phone, 'Mobile number', { optional: false }));
   if (ph.length < 10) throw fail(400, 'Please enter a valid mobile number');
@@ -63,13 +66,16 @@ r.post('/p/:token/enquire', rateLimit({ windowMs: 10 * 60_000, limit: 8, key: re
   if (cleanUnitNo && !unit) throw fail(400, 'Selected unit does not belong to this project');
   let lead = link.lead_id ? await one(`SELECT * FROM leads WHERE id = $1`, [link.lead_id]) : await one(`SELECT * FROM leads WHERE org_id = $1 AND phone = $2 AND stage <> 'lost'`, [link.org_id, ph]);
   if (!lead) {
-    lead = await one(`INSERT INTO leads (org_id, project_id, name, phone, source, source_ref, unit_id, assigned_to, assigned_at, broker_id, stage, notes, temperature)
-                      VALUES ($1,$2,$3,$4,'share_link',$5,$6,$7,now(),$8,'qualified',$9,'hot') RETURNING *`,
-      [link.org_id, link.project_id, cleanName, ph, link.token, unit?.id || null, link.role === 'admin' ? null : link.created_by, link.role === 'broker' ? link.created_by : null, cleanMessage]);
+    lead = await one(`INSERT INTO leads (org_id, project_id, name, phone, source, source_ref, unit_id, assigned_to, assigned_at, broker_id, stage, notes, temperature, whatsapp_consent, whatsapp_consent_updated_at)
+                      VALUES ($1,$2,$3,$4,'share_link',$5,$6,$7,now(),$8,'qualified',$9,'hot',CASE WHEN $10 THEN 'opted_in' ELSE 'unknown' END,CASE WHEN $10 THEN now() END) RETURNING *`,
+      [link.org_id, link.project_id, cleanName, ph, link.token, unit?.id || null, link.role === 'admin' ? null : link.created_by, link.role === 'broker' ? link.created_by : null, cleanMessage, whatsappOptIn]);
     await logLead(lead.id, null, 'created', `Enquired from a shared link${cleanUnitNo ? ' for ' + cleanUnitNo : ''}`);
     if (!lead.assigned_to) await assignLead(lead.id);
   } else {
-    await q(`UPDATE leads SET unit_id = COALESCE($2, unit_id), temperature = 'hot', updated_at = now() WHERE id = $1`, [lead.id, unit?.id || null]);
+    await q(`UPDATE leads SET unit_id = COALESCE($2, unit_id), temperature = 'hot',
+             whatsapp_consent = CASE WHEN $3 THEN 'opted_in' ELSE whatsapp_consent END,
+             whatsapp_consent_updated_at = CASE WHEN $3 THEN now() ELSE whatsapp_consent_updated_at END,
+             updated_at = now() WHERE id = $1`, [lead.id, unit?.id || null, whatsappOptIn]);
     await logLead(lead.id, null, 'note', `Enquired again from the link${cleanUnitNo ? ' about ' + cleanUnitNo : ''}${cleanMessage ? ': ' + cleanMessage : ''}`);
   }
   if (cleanVisit) await logLead(lead.id, null, 'note', `Wants a site visit: ${cleanVisit}`);
@@ -133,9 +139,16 @@ r.post('/bridge/leadsathi/:orgId', h(async (req, res) => {
   // A requested slot is scheduled pending confirmation, never marked confirmed.
   const at = visitAt ? new Date(visitAt) : null;
   if (at) {
-    const active = await one("SELECT id FROM site_visits WHERE lead_id=$1 AND status IN ('scheduled','confirmed')",[lead.id]);
-    if (!active) {
-      await q(`INSERT INTO site_visits(org_id,lead_id,project_id,agent_id,scheduled_at) VALUES ($1,$2,$3,$4,$5)`,[org.id,lead.id,lead.project_id,lead.assigned_to,at]);
+    let createdVisit = false;
+    await tx(async db => {
+      await lockLeadVisits(db, lead.id);
+      const active = await db.one("SELECT id FROM site_visits WHERE lead_id=$1 AND status IN ('scheduled','confirmed') FOR UPDATE", [lead.id]);
+      if (!active) {
+        await db.q(`INSERT INTO site_visits(org_id,lead_id,project_id,agent_id,scheduled_at) VALUES ($1,$2,$3,$4,$5)`, [org.id, lead.id, lead.project_id, lead.assigned_to, at]);
+        createdVisit = true;
+      }
+    });
+    if (createdVisit) {
       await q("UPDATE leads SET stage='visit_scheduled' WHERE id=$1 AND stage IN ('new','contacted','qualified')",[lead.id]);
       await logLead(lead.id,null,'visit',`Site visit requested through LeadSathi for ${at.toISOString()}; sales team confirmation required.`);
     }

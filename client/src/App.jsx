@@ -4,6 +4,7 @@ import { Icon, Logo, Avatar, useLoad } from './components/ui.jsx';
 import { ago } from './lib/format.js';
 import Login from './pages/Login.jsx';
 import Dashboard from './pages/Dashboard.jsx';
+import BrokerWorkspace from './pages/BrokerWorkspace.jsx';
 import Reports from './pages/Reports.jsx';
 import Projects from './pages/Projects.jsx';
 import Inventory from './pages/Inventory.jsx';
@@ -51,7 +52,8 @@ const NAV = {
     ['tickets', 'Complaints', 'wrench']
   ],
   broker: [
-    ['dashboard', 'Dashboard', 'home'],
+    ['dashboard', 'Broker workspace', 'home'],
+    ['projects', 'Projects & materials', 'building'],
     ['inventory', 'Inventory & Kit', 'grid'],
     ['leads', 'My clients', 'funnel'],
     ['visits', 'Site visits', 'calendar'],
@@ -180,7 +182,7 @@ function Shell({ route, go, say, toast, onLogout, onSwitchRole }) {
       <main className="work">
         <header className="topbar">
           {adminWorkspace && <button className="iconbtn dashboard-menu-button" aria-label="Open navigation" aria-expanded={sidebarOpen} onClick={() => setSidebarOpen(value => !value)}><Icon name="menu" /></button>}
-          <div style={{ minWidth: 0 }}><h1>{TITLES[page]}</h1></div><div className="spacer" />
+          <div style={{ minWidth: 0 }}><h1>{role === 'broker' && page === 'dashboard' ? 'Broker workspace' : TITLES[page]}</h1></div><div className="spacer" />
           {billing && (billing.plan_type === 'trial' || billing.is_expired) && (
             <button
               type="button"
@@ -220,7 +222,7 @@ function Shell({ route, go, say, toast, onLogout, onSwitchRole }) {
           </div> : <button className="iconbtn" aria-label="Log out" onClick={onLogout}><Icon name="logout" /></button>}
         </header>
         <div className="content" key={page + route.join('/')}>
-          {page === 'dashboard' && <Dashboard {...props} />}
+          {page === 'dashboard' && (role === 'broker' ? <BrokerWorkspace {...props} /> : <Dashboard {...props} />)}
           {page === 'reports' && <Reports {...props} />}
           {page === 'projects' && <Projects {...props} />}
           {page === 'inventory' && <Inventory {...props} />}

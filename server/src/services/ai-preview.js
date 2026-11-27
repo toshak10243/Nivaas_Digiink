@@ -2,6 +2,7 @@ import { one, many } from '../db.js';
 import { knowledge } from './twin.js';
 import { callGemini } from './gemini.js';
 import { fail } from '../lib/auth.js';
+import { detectMediaIntent, findMatchingMedia, resolveMediaProject } from './property-media.js';
 
 export function validatePreview(body) {
   const text=typeof body?.text==='string'?body.text.trim():'';
@@ -29,7 +30,11 @@ export async function previewReply(chat,input,generate=callGemini) {
   const lead=await one('SELECT * FROM leads WHERE id=$1 AND org_id=$2',[chat.lead_id,chat.org_id]);
   const org=await one('SELECT name FROM orgs WHERE id=$1',[chat.org_id]);
   if(!lead||!org)throw fail(404,'Chat context not found.');
-  const facts=(await knowledge(chat.org_id,lead.project_id)).slice(0,30000);
+  const history=[...input.history,{sender:'customer',body:input.text}];
+  const intent=detectMediaIntent(history,'',lead.config_pref);
+  const mediaProjects=intent.requested?await many('SELECT id, name FROM projects WHERE org_id = $1',[chat.org_id]):[];
+  const mediaProject=intent.requested?resolveMediaProject(mediaProjects,history,lead.project_id):null;
+  const facts=(await knowledge(chat.org_id,mediaProject?.id||lead.project_id)).slice(0,30000);
   const system=`You are the sales assistant for ${org.name}. This is an in-app AI test with a staff member acting as the customer.
 Use only these project facts and inventory snapshots:
 ${facts||'No project information is available. Ask which project they need and say the team will confirm details.'}
@@ -50,28 +55,10 @@ Return only JSON: {"reply":"your customer-facing response"}.`;
   let result;
   try{result=JSON.parse(text.trim().replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,''));}catch{throw fail(502,'AI returned an unreadable response. Please try again.');}
   if(typeof result?.reply!=='string'||!result.reply.trim()||result.reply.length>4000)throw fail(502,'AI did not return a valid reply. Please try again.');
-  const latest = input.text;
-  const mediaTerm = /\b(photo|photos|picture|pictures|image|images|pic|pics|interior|sample\s*flat|layout|floor\s*plan|floorplan|blueprint)\b|फोटो|तस्वीर|नक्शा|naksha/i;
-  const photoTerm = /\b(photo|photos|picture|pictures|image|images|pic|pics|interior|sample\s*flat)\b|फोटो|तस्वीर/i;
-  const layoutTerm = /\b(layout|floor\s*plan|floorplan|blueprint)\b|नक्शा|naksha/i;
-  const followup = /\b(send|bhej(?:o|na)?|dikha(?:o|na)?|yes|haan|ha|please|sure)\b/i.test(latest);
-  const recentCustomers = input.history.filter(m => m.sender === 'customer').slice(-4).map(m => m.body);
-  const mediaRequested = mediaTerm.test(latest) || (followup && recentCustomers.some(m => mediaTerm.test(m)));
-  const photoRequested = photoTerm.test(latest) || (followup && recentCustomers.some(m => photoTerm.test(m)));
-  const layoutRequested = layoutTerm.test(latest) || (followup && recentCustomers.some(m => layoutTerm.test(m))) || (followup && input.history.some(m => m.sender === 'ai' && layoutTerm.test(m.body)));
-  const bhk = Number((latest.match(/\b([1234])\s*bhk\b/i) || [])[1]
-    || input.history.slice().reverse().map(m => (m.body.match(/\b([1234])\s*bhk\b/i) || [])[1]).find(Boolean)
-    || (String(lead.config_pref || '').match(/[1234]/) || [])[0]);
   let attachments = [];
-  if (mediaRequested && bhk) {
-    const kinds = layoutRequested && photoRequested ? ['image', 'floorplan'] : [layoutRequested ? 'floorplan' : 'image'];
-    for (const kind of kinds) {
-      const rows = await many(`SELECT DISTINCT ON (m.url) m.url, m.title, m.kind, t.name AS type_name
-        FROM media m JOIN unit_types t ON t.id = m.unit_type_id
-        WHERE m.project_id = $1 AND t.bhk = $2 AND m.kind = $3
-        ORDER BY m.url, m.sort, m.created_at LIMIT $4`, [lead.project_id, bhk, kind, kinds.length > 1 ? 1 : 2]);
-      attachments.push(...rows);
-    }
+  if (intent.requested) {
+    if (mediaProject && intent.bhk && intent.kinds.length) attachments = await findMatchingMedia(many, mediaProject.id, intent.bhk, intent.kinds, 3);
+    if (!attachments.length) result.reply = `${result.reply} I couldn't find matching media in the project records, so I won't show unrelated files. Our team can confirm the right materials.`;
   }
-  return{reply:result.reply.trim(),preview:true,delivered:false,attachments};
+  return { reply: result.reply.trim(), preview: true, delivered: false, attachments, project_name: mediaProject?.name || null, bhk: intent.bhk || null };
 }

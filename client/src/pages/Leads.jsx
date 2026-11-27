@@ -4,6 +4,7 @@ import { Icon, Avatar, Pill, Drawer, Modal, Seg, Field, useLoad, Loading, Empty 
 import { STAGES, stageLabel, SOURCES, ago, dateTime, phone, money } from '../lib/format.js';
 import { ShareModal } from './Inventory.jsx';
 import { prioritizeLead } from '../../../shared/lead-priority.js';
+import LeadImportModal from '../components/LeadImportModal.jsx';
 
 export default function Leads({ me, say, go, params }) {
   const role = me.user.role;
@@ -12,11 +13,13 @@ export default function Leads({ me, say, go, params }) {
   const [temp, setTemp] = useState('all');
   const [followFilter, setFollowFilter] = useState('all');
   const [priority, setPriority] = useState('all');
+  const [myDay, setMyDay] = useState(false);
   const [who, setWho] = useState('all');
   const [leads, reload] = useLoad(() => api.get('/api/leads'), []);
   const [team] = useLoad(() => (role === 'admin' ? api.get('/api/team') : Promise.resolve([])), [role]);
   const [projects] = useLoad(() => api.get('/api/projects'), []);
   const [adding, setAdding] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [selected, setSelected] = useState(new Set());
   const [bulkModal, setBulkModal] = useState(null);
   const [pendingBulkAction, setPendingBulkAction] = useState(null);
@@ -33,6 +36,7 @@ export default function Leads({ me, say, go, params }) {
   const shown = prioritizedLeads.filter(l => {
     if (temp !== 'all' && l.temperature !== temp) return false;
     if (who !== 'all' && (who === 'none' ? !!l.assigned_to : l.assigned_to !== who)) return false;
+    if (myDay && (l.assigned_to !== me.user.id || !(isOverdue(l.followup_at) || isToday(l.followup_at) || l.stage === 'new'))) return false;
     if (followFilter === 'today' && !isToday(l.followup_at)) return false;
     if (followFilter === 'overdue' && !isOverdue(l.followup_at)) return false;
     if (followFilter === 'upcoming' && !isFuture(l.followup_at)) return false;
@@ -87,10 +91,12 @@ export default function Leads({ me, say, go, params }) {
         <div style={{ flex: 1 }}><h2>{role === 'broker' ? 'My clients' : role === 'sales' ? 'My leads' : 'All leads'}</h2>
           <p>{role === 'broker' ? 'Register your clients here first. The first registration of a phone number is protected for you.' : 'Leads from LeadSathi, shared links, brokers and walk-ins are prioritized by interest, budget, preferences, engagement, and follow-up timing.'}</p></div>
         {api.mode === 'demo' && role === 'admin' && <button className="btn" onClick={async () => { const r = await api.post('/demo/leadsathi'); say(`LeadSathi sent ${r.lead.name} → assigned to ${r.assigned}`); reload(); }}><Icon name="spark" />Simulate LeadSathi lead</button>}
+        {api.mode === 'real' && role === 'admin' && <button className="btn" onClick={() => setImporting(true)}><Icon name="upload" />Import CSV</button>}
         <button className="btn sun" onClick={() => setAdding(true)}><Icon name="userPlus" />{role === 'broker' ? 'Register client' : 'Add lead'}</button>
       </div>
 
       <div className="invbar">
+        <button type="button" className={'btn sm' + (myDay ? ' active' : '')} aria-pressed={myDay} onClick={() => setMyDay(value => !value)}>My day</button>
         <Seg value={view} onChange={setView} label="View" options={[['board', 'Board'], ['list', 'List']]} />
         <Seg value={temp} onChange={setTemp} label="Temperature" options={[['all', 'All'], ['hot', 'Hot'], ['warm', 'Warm'], ['cold', 'Cold']]} />
         <Seg value={followFilter} onChange={setFollowFilter} label="Follow-ups" options={[['all', 'All'], ['today', 'Today'], ['overdue', 'Overdue'], ['upcoming', 'Future']]} />
@@ -136,6 +142,7 @@ export default function Leads({ me, say, go, params }) {
 
       {openId && <LeadDrawer id={openId} me={me} say={say} go={go} sellers={sellers} projects={projects || []} onClose={() => go('leads')} onChange={reload} />}
       {adding && <AddLead me={me} projects={projects || []} say={say} onClose={() => setAdding(false)} onDone={l => { setAdding(false); reload(); go('leads/' + l.id); }} />}
+      {importing && <LeadImportModal onClose={() => setImporting(false)} onDone={message => { setImporting(false); say(message); reload(); }} />}
       {bulkModal === 'delete' && <Modal title={`Delete ${selected.size} leads?`} onClose={() => !busyBulk && setBulkModal(null)} footer={<><button className="btn" disabled={busyBulk} onClick={() => setBulkModal(null)}>Cancel</button><button className="btn danger-btn" disabled={busyBulk} onClick={handleBulkDelete}>{busyBulk ? 'Deleting…' : 'Delete leads'}</button></>}><p>This permanently deletes the selected lead records. This action cannot be undone.</p></Modal>}
     </div>
   );
@@ -259,12 +266,19 @@ function LeadDrawer({ id, me, say, go, sellers, projects, onClose, onChange }) {
       <div className="callbar">
         {role === 'broker'
           ? <span className="btn" aria-label="Customer phone number masked"><Icon name="phone" />{phone(l.phone)}</span>
-          : <><a className="btn sun" href={`tel:+${String(l.phone).replace(/\D/g, '')}`}><Icon name="phone" />{phone(l.phone)}</a><a className="btn wa-btn" href={`https://wa.me/${String(l.phone).replace(/\D/g, '')}`} target="_blank" rel="noreferrer"><Icon name="wa" />WhatsApp Web</a></>}
+          : <><a className="btn sun" href={`tel:+${String(l.phone).replace(/\D/g, '')}`}><Icon name="phone" />{phone(l.phone)}</a>{l.whatsapp_consent === 'opted_out' ? <span className="btn ghost" aria-label="Customer opted out of WhatsApp">WhatsApp opted out</span> : <a className="btn wa-btn" href={`https://wa.me/${String(l.phone).replace(/\D/g, '')}`} target="_blank" rel="noreferrer"><Icon name="wa" />WhatsApp Web</a>}</>}
         {role !== 'broker' && (
           l.chats?.[0]
             ? <button className="btn" onClick={() => go('chats/' + l.chats[0].id)}><Icon name="chat" />Open In-app Chat</button>
             : <button className="btn" onClick={startLeadChat}><Icon name="chat" />Start WhatsApp Chat</button>
         )}
+      </div>
+
+      <div className="wa-consent-row">
+        <label htmlFor="lead-wa-consent"><b>WhatsApp contact preference</b><select id="lead-wa-consent" className="select" value={l.whatsapp_consent || 'unknown'} onChange={event => patch({ whatsapp_consent: event.target.value })}>
+          <option value="unknown">Unknown · no consent recorded</option><option value="opted_in">Opted in · may receive updates</option><option value="opted_out">Opted out · do not message</option>
+        </select></label>
+        <span className="muted">Templates require opt-in. A customer’s STOP reply automatically opts them out.</span>
       </div>
 
       <div className="stagepick" role="group" aria-label="Stage">
@@ -294,7 +308,7 @@ function LeadDrawer({ id, me, say, go, sellers, projects, onClose, onChange }) {
               {l.followup_note && <span className="muted"> — “{l.followup_note}”</span>}
             </div>
             <div className="followup-actions">
-              {role !== 'broker' && <><a className="btn sm sun" href={`tel:+${String(l.phone).replace(/\D/g, '')}`}><Icon name="phone" />Call Now</a><a className="btn sm wa-btn" href={`https://wa.me/${String(l.phone).replace(/\D/g, '')}?text=${encodeURIComponent(`Namaste ${l.name?.split(' ')[0] || ''}! Following up as discussed regarding our property.`)}`} target="_blank" rel="noreferrer"><Icon name="wa" />WhatsApp</a></>}
+              {role !== 'broker' && <><a className="btn sm sun" href={`tel:+${String(l.phone).replace(/\D/g, '')}`}><Icon name="phone" />Call Now</a>{l.whatsapp_consent !== 'opted_out' && <a className="btn sm wa-btn" href={`https://wa.me/${String(l.phone).replace(/\D/g, '')}?text=${encodeURIComponent(`Namaste ${l.name?.split(' ')[0] || ''}! Following up as discussed regarding our property.`)}`} target="_blank" rel="noreferrer"><Icon name="wa" />WhatsApp</a>}</>}
               <button className="btn sm" onClick={clearFollowup}><Icon name="checkCircle" />Mark Done</button>
             </div>
           </div>

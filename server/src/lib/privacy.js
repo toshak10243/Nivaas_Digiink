@@ -10,3 +10,15 @@ export function maskPhoneField(row, field, role) {
 export function maskPhoneRows(rows, field, role) {
   return role === 'broker' ? rows.map(row => maskPhoneField(row, field, role)) : rows;
 }
+
+/** Remove buyer contact details from broker-facing CRM responses. */
+export function protectCustomerFields(row, role, phoneField = 'phone', emailField = 'email') {
+  if (role !== 'broker' || !row) return row;
+  const protectedRow = maskPhoneField(row, phoneField, role);
+  if (Object.hasOwn(protectedRow, emailField)) protectedRow[emailField] = null;
+  return protectedRow;
+}
+
+export function protectCustomerRows(rows, role, phoneField = 'phone', emailField = 'email') {
+  return role === 'broker' ? rows.map(row => protectCustomerFields(row, role, phoneField, emailField)) : rows;
+}

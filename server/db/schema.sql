@@ -145,6 +145,11 @@ CREATE TABLE IF NOT EXISTS leads (
   email         text,
   source        text NOT NULL DEFAULT 'manual',   -- leadsathi | share_link | broker | walk_in | manual | whatsapp
   source_ref    text,                             -- LeadSathi conversation id, share token …
+  campaign_name text,
+  adset_name    text,
+  ad_name       text,
+  whatsapp_consent text NOT NULL DEFAULT 'unknown',
+  whatsapp_consent_updated_at timestamptz,
   stage         text NOT NULL DEFAULT 'new' CHECK (stage IN ('new','contacted','qualified','visit_scheduled','visit_done','negotiation','booked','lost')),
   temperature   text NOT NULL DEFAULT 'warm' CHECK (temperature IN ('hot','warm','cold')),
   budget        text,
@@ -188,8 +193,8 @@ CREATE TABLE IF NOT EXISTS site_visits (
   lead_id        uuid NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
   project_id     uuid REFERENCES projects(id) ON DELETE SET NULL,
   agent_id       uuid REFERENCES users(id) ON DELETE SET NULL,
-  scheduled_at   timestamptz NOT NULL,
-  status         text NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled','confirmed','done','no_show','cancelled','rescheduled')),
+  scheduled_at   timestamptz,
+  status         text NOT NULL DEFAULT 'scheduled' CHECK (status IN ('to_confirm','scheduled','confirmed','done','no_show','cancelled','rescheduled')),
   visitors_count int NOT NULL DEFAULT 1,
   transport      text,
   pickup_address text,
@@ -197,6 +202,10 @@ CREATE TABLE IF NOT EXISTS site_visits (
   rating         int,
   feedback       text,
   evidence_passport jsonb DEFAULT '{}'::jsonb,
+  source         text NOT NULL DEFAULT 'employee',
+  scheduled_by   uuid REFERENCES users(id) ON DELETE SET NULL,
+  chat_id        uuid,
+  confirmation_note text,
   created_at     timestamptz NOT NULL DEFAULT now()
 );
 
@@ -351,6 +360,24 @@ CREATE TABLE IF NOT EXISTS wa_numbers (
   created_at      timestamptz NOT NULL DEFAULT now()
 );
 
+-- Meta Pages used for Facebook Lead Ads. Access tokens are never returned by the API.
+CREATE TABLE IF NOT EXISTS meta_pages (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  page_id text NOT NULL,
+  page_name text,
+  access_token text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (page_id)
+);
+
+CREATE TABLE IF NOT EXISTS meta_lead_events (
+  leadgen_id text PRIMARY KEY,
+  org_id uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  lead_id uuid REFERENCES leads(id) ON DELETE SET NULL,
+  received_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS chats (
   id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id           uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
@@ -370,6 +397,9 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   sender     text NOT NULL CHECK (sender IN ('customer','ai','agent','system')),
   body       text NOT NULL,
   ext_id     text,
+  delivery_status text,
+  delivery_error text,
+  status_updated_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS chat_messages_chat ON chat_messages(chat_id, created_at);

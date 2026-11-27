@@ -4,6 +4,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { config } from '../config.js';
 
+const templateCache = new Map();
+
 async function graph(path, token, body) {
   const res = await fetch(config.meta.graph + path, {
     method: 'POST',
@@ -14,6 +16,36 @@ async function graph(path, token, body) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.error) throw new Error(data?.error?.message || `WhatsApp ${res.status}`);
   return data;
+}
+
+async function graphGet(url, token) {
+  const target = new URL(url, config.meta.graph + '/');
+  if (target.hostname !== 'graph.facebook.com' || !target.pathname.startsWith(new URL(config.meta.graph).pathname)) {
+    throw new Error('Meta returned an unexpected template pagination URL');
+  }
+  const res = await fetch(target, { signal: AbortSignal.timeout(20000), headers: { Authorization: `Bearer ${token}` } });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.error) throw new Error(data?.error?.message || `WhatsApp ${res.status}`);
+  return data;
+}
+
+export async function listTemplates(num) {
+  if (!num?.waba_id) throw new Error('Add the WhatsApp Business Account ID in Settings before loading templates.');
+  const cacheKey = `${num.waba_id}:${num.phone_number_id}`;
+  const cached = templateCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.templates;
+  const first = new URL(`${config.meta.graph}/${encodeURIComponent(num.waba_id)}/message_templates`);
+  first.searchParams.set('fields', 'id,name,status,category,language,components,quality_score');
+  first.searchParams.set('limit', '100');
+  const templates = [];
+  let next = first.toString();
+  for (let page = 0; next && page < 5; page += 1) {
+    const data = await graphGet(next, num.access_token);
+    templates.push(...(data.data || []));
+    next = data.paging?.next || '';
+  }
+  templateCache.set(cacheKey, { templates, expiresAt: Date.now() + 60_000 });
+  return templates;
 }
 
 export function verifySignature(raw, header) {
@@ -95,6 +127,15 @@ export const sendTemplate = (num, to, params = []) =>
     template: {
       name: config.meta.introTemplate, language: { code: config.meta.templateLang },
       components: params.length ? [{ type: 'body', parameters: params.map(t => ({ type: 'text', text: String(t) })) }] : [],
+    },
+  });
+
+export const sendApprovedTemplate = (num, to, name, language, params = []) =>
+  graph(`/${num.phone_number_id}/messages`, num.access_token, {
+    messaging_product: 'whatsapp', to, type: 'template',
+    template: {
+      name, language: { code: language },
+      components: params.length ? [{ type: 'body', parameters: params.map(value => ({ type: 'text', text: String(value) })) }] : [],
     },
   });
 

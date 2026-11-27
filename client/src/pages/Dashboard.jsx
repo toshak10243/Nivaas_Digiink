@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { api } from '../api/index.js';
 import { Icon, Avatar, Pill, useLoad, Loading, Empty, copyText } from '../components/ui.jsx';
 import { money, inr, dateTime, STAGES, ago, phone } from '../lib/format.js';
@@ -33,6 +33,8 @@ function Kpi({ icon, tone, label, value, detail, progress }) {
 }
 
 function Admin({ d, me, go }) {
+  const [analyticsMonths, setAnalyticsMonths] = useState(6);
+  const [analytics] = useLoad(() => api.get(`/api/dashboard/analytics?months=${analyticsMonths}`), [analyticsMonths]);
   const inv = Object.fromEntries(d.inventory.map(x => [x.status, x.n]));
   const total = Object.values(inv).reduce((a, b) => a + b, 0);
   const pipe = Object.fromEntries(d.pipeline.map(x => [x.stage, Number(x.n || 0)]));
@@ -57,7 +59,7 @@ function Admin({ d, me, go }) {
       <div className="dash-hero-sub">
         <span><Icon name="layers" />Collections: <b>{money(d.collected)}</b></span>
         <span><Icon name="building" />Available Units: <b>{inv.available || 0} / {total}</b></span>
-        <span><Icon name="calendar" />Site Visits Scheduled: <b>{upcomingVisits.length}</b></span>
+        <span><Icon name="calendar" />Site Visits Scheduled: <b>{d.visits_next_7_days_count}</b></span>
       </div>
       <div className="dash-hero-actions">
         <button className="btn sun" onClick={() => go('inventory')}><Icon name="grid" />Live Inventory &amp; Cost Sheets</button>
@@ -92,6 +94,18 @@ function Admin({ d, me, go }) {
         <div className="pipeline-list">{stageRows.map(([key, label, count]) => { const percent = Math.round(count / pipelineTotal * 100); return <button className="pipeline-row" key={key} onClick={() => go('leads')}><span>{label}</span><i><b style={{ width: percent + '%' }} /></i><strong>{count} <small>({percent}%)</small></strong></button>; })}</div>
       </article>
     </section>
+    <section className="card admin-panel dashboard-report-panel">
+      <header className="admin-panel-head"><div><h3><Icon name="chart" />Sales, leads &amp; visits</h3><span>CRM activity for the most recent months</span></div>
+        <div className="report-range-toggle"><button className={analyticsMonths === 6 ? 'active' : ''} onClick={() => setAnalyticsMonths(6)}>6 months</button><button className={analyticsMonths === 12 ? 'active' : ''} onClick={() => setAnalyticsMonths(12)}>12 months</button></div>
+      </header>
+      {!analytics ? <div className="admin-empty-compact">Loading analytics…</div> : <div className="dashboard-report-grid">
+        <ReportBars title="New leads by month" rows={analytics.rows} value="leads" />
+        <ReportBars title="Visits · scheduled / completed" rows={analytics.rows} value="visits_scheduled" second="visits_completed" />
+        <ReportBars title="Sales value" rows={analytics.rows} value="sales_value" currency />
+        <ReportBars title="Collections received" rows={analytics.rows} value="collections" currency />
+        <div className="report-source-list"><b>Lead sources · selected period</b>{analytics.sources.length ? analytics.sources.map(row => <div key={row.source}><span>{row.source.replaceAll('_', ' ')}</span><strong>{row.leads}</strong></div>) : <small>No leads in this period.</small>}</div>
+      </div>}
+    </section>
     <section className="admin-bottom-grid">
       <article className="card admin-panel performers-panel">
         <header className="admin-panel-head"><h3><Icon name="trophy" />Top Performers This Month</h3><button className="admin-text-action" onClick={() => go('team')}>View All <Icon name="arrow" /></button></header>
@@ -106,6 +120,17 @@ function Admin({ d, me, go }) {
     </section>
     {d.followups?.length > 0 && <section className="card admin-panel admin-followups"><header className="admin-panel-head"><h3>Pending &amp; Today&apos;s Follow-up Agenda</h3><span>{d.followups.length} scheduled client touches</span></header><div className="list">{d.followups.map(f => <div key={f.id} className="lrow"><span className="when">{dateTime(f.followup_at)}</span><button className="linkbtn" style={{ flex: 1, textAlign: 'left' }} onClick={() => go('leads/' + f.id)}><b>{f.name}</b><span className="muted"> &middot; {phone(f.phone)} &middot; Advisor: {f.agent || 'Unassigned'}</span></button></div>)}</div></section>}
   </div>;
+}
+
+function ReportBars({ title, rows, value, second, currency = false }) {
+  const amounts = rows.map(row => Number(row[value] || 0));
+  const max = Math.max(1, ...amounts, ...(second ? rows.map(row => Number(row[second] || 0)) : []));
+  const format = n => currency ? money(n) : Number(n).toLocaleString('en-IN');
+  return <div className="report-mini-chart"><b>{title}</b>{rows.map(row => <div className="report-mini-row" key={row.month}>
+    <span>{new Date(row.month + '-01T00:00:00').toLocaleDateString('en-IN', { month: 'short' })}</span>
+    <div className="report-mini-track"><i style={{ width: `${Number(row[value] || 0) / max * 100}%` }} />{second && <i className="secondary" style={{ width: `${Number(row[second] || 0) / max * 100}%` }} />}</div>
+    <strong>{format(row[value])}{second ? ` / ${format(row[second])}` : ''}</strong>
+  </div>)}</div>;
 }
 
 /* 2. Sales agent dashboard */
@@ -134,7 +159,7 @@ function Sales({ d, me, go, say, reload }) {
           </h2>
           <div className="dash-hero-sub">
             <span className="dash-hero-stat-pill">Active Leads: <b>{open}</b></span>
-            <span className="dash-hero-stat-pill">Visits Booked: <b>{d.visits.length}</b></span>
+            <span className="dash-hero-stat-pill">Visits Booked: <b>{d.visits_count}</b></span>
             <span className="dash-hero-stat-pill">Pending Incentive: <b>{money(d.earnings.pending)}</b></span>
           </div>
         </div>
@@ -219,7 +244,7 @@ function Sales({ d, me, go, say, reload }) {
             <span className="dash-kpi-label">Site Visits Scheduled</span>
             <div className="dash-kpi-icon purple"><Icon name="calendar" /></div>
           </div>
-          <div className="dash-kpi-val">{d.visits.length}</div>
+          <div className="dash-kpi-val">{d.visits_count}</div>
           <div className="dash-kpi-sub">
             With digital evidence passport
           </div>
@@ -231,10 +256,10 @@ function Sales({ d, me, go, say, reload }) {
         <div className="card">
           <div className="card-h">
             <h3>My Scheduled Site Visits</h3>
-            <span className="muted">{d.visits.length} booked</span>
+            <span className="muted">{d.visits_count} booked</span>
           </div>
           <div className="list">
-            {d.visits.length === 0 ? (
+            {d.visits_count === 0 ? (
               <Empty icon="calendar" title="No visits scheduled yet">Share a project flat link with your prospects to book a visit.</Empty>
             ) : (
               d.visits.map(v => (
@@ -326,16 +351,30 @@ function Sales({ d, me, go, say, reload }) {
 function Broker({ d, me, go, say, reload }) {
   const pipe = Object.fromEntries(d.pipeline.map(x => [x.stage, x.n]));
   const open = Object.entries(pipe).filter(([k]) => !['booked', 'lost'].includes(k)).reduce((a, [, n]) => a + n, 0);
-  const kitUrl = `${window.location.origin}/#/inventory`;
+  const [projects] = useLoad(() => api.get('/api/projects'), []);
+  const [projectId, setProjectId] = useState('');
+  const selectedProject = (projects || []).find(project => project.id === projectId) || projects?.[0];
+  useEffect(() => { if (!projectId && projects?.length) setProjectId(projects[0].id); }, [projects, projectId]);
 
-  const copyKit = () => {
-    copyText(kitUrl);
-    say('Your Live Broker Sales Kit link copied!');
+  const createKit = async () => {
+    if (!selectedProject) throw new Error('No project is available to share yet');
+    return api.post('/api/share', { project_id: selectedProject.id });
   };
 
-  const shareKitWhatsApp = () => {
-    const text = `Namaste! Explore our latest authorized inventory, live prices, and floor plans:\n${kitUrl}`;
-    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+  const copyKit = async () => {
+    try { const link = await createKit(); await copyText(link.url); say(`${selectedProject.name} sales kit link copied`); }
+    catch (error) { say(error.message); }
+  };
+
+  const shareKitWhatsApp = async () => {
+    const popup = window.open('about:blank', '_blank');
+    if (!popup) { say('Allow pop-ups to open WhatsApp sharing'); return; }
+    try {
+      const link = await createKit();
+      const text = `Namaste! Explore ${selectedProject.name}: live availability, approved prices, photos and floor plans.\n${link.url}`;
+      popup.opener = null;
+      popup.location.href = `https://wa.me/?text=${encodeURIComponent(text)}`;
+    } catch (error) { popup.close(); say(error.message); }
   };
 
   return (
@@ -364,10 +403,10 @@ function Broker({ d, me, go, say, reload }) {
         </div>
 
         <div className="dash-hero-actions">
-          <button className="btn sun" onClick={copyKit}>
+          <button className="btn sun" onClick={copyKit} disabled={!selectedProject}>
             <Icon name="link" />Copy My Live Sales Kit
           </button>
-          <button className="btn wa-btn" onClick={shareKitWhatsApp}>
+          <button className="btn wa-btn" onClick={shareKitWhatsApp} disabled={!selectedProject}>
             <Icon name="wa" />Broadcast Live Kit on WhatsApp
           </button>
           <button className="btn" onClick={() => go('leads')}>
@@ -381,13 +420,16 @@ function Broker({ d, me, go, say, reload }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div className="dash-kpi-icon blue"><Icon name="grid" /></div>
           <div>
-            <b style={{ fontSize: 14, display: 'block' }}>Your Live Broker Sales Kit Link</b>
-            <span className="muted" style={{ fontSize: 12 }}>Contains live inventory, current pricing, and official brochures linked to your ID</span>
+            <b style={{ fontSize: 14, display: 'block' }}>{selectedProject ? `${selectedProject.name} · Live project kit` : 'Project sales kit'}</b>
+            <span className="muted" style={{ fontSize: 12 }}>Customer-ready project materials, photos, floor plans, live availability and approved pricing</span>
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {(projects || []).length > 1 && <select className="select" aria-label="Project to share" value={selectedProject?.id || ''} onChange={e => setProjectId(e.target.value)} style={{ minWidth: 170 }}>
+            {projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
+          </select>}
           <button className="btn sm ghost" onClick={copyKit}><Icon name="copy" />Copy Link</button>
-          <button className="btn sm" onClick={() => go('inventory')}><Icon name="eye" />Open Live Kit</button>
+          <button className="btn sm" onClick={() => go(`inventory/${selectedProject?.id || ''}`)}><Icon name="eye" />Open Inventory</button>
         </div>
       </div>
 
@@ -431,7 +473,7 @@ function Broker({ d, me, go, say, reload }) {
             <span className="dash-kpi-label">Site Visits</span>
             <div className="dash-kpi-icon purple"><Icon name="calendar" /></div>
           </div>
-          <div className="dash-kpi-val">{d.visits.length}</div>
+          <div className="dash-kpi-val">{d.visits_count}</div>
           <div className="dash-kpi-sub">
             With digital attendance records
           </div>
@@ -443,10 +485,10 @@ function Broker({ d, me, go, say, reload }) {
         <div className="card">
           <div className="card-h">
             <h3>My Client Site Visits</h3>
-            <span className="muted">{d.visits.length} booked</span>
+            <span className="muted">{d.visits_count} booked</span>
           </div>
           <div className="list">
-            {d.visits.length === 0 ? (
+            {d.visits_count === 0 ? (
               <Empty icon="calendar" title="No visits booked yet">Register your client and schedule their site visit.</Empty>
             ) : (
               d.visits.map(v => (
